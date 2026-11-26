@@ -36,6 +36,13 @@
       </div>
     </div>
     <div class="form-group">
+      <label for="{{partId}}-north">{{localize "VIRAHOLO.Config.look.north"}}</label>
+      <div class="form-fields">
+        <input type="checkbox" id="{{partId}}-north" name="{{flags}}.look.north" {{checked holo.look.north}}>
+      </div>
+      <p class="hint">{{localize "VIRAHOLO.Config.look.northHint"}}</p>
+    </div>
+    <div class="form-group">
       <label for="{{partId}}-glow">{{localize "VIRAHOLO.Config.look.glow"}}</label>
       <div class="form-fields">
         <input type="checkbox" id="{{partId}}-glow" name="{{flags}}.look.glow" {{checked holo.look.glow}}>

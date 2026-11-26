@@ -82,6 +82,8 @@
         "ring": "Projector ring",
         "dashes": "Projector dashed ring",
         "glow": "Projector glow",
+        "north": "North marker",
+        "northHint": "A small ^ between the projector's circles, pointing to the top of the map image (taken to be north).",
         "labels": "Show labels",
         "motes": "Data motes"
       },

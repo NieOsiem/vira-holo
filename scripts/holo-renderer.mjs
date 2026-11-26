@@ -203,11 +203,19 @@ uniform vec3 uColor;
 uniform float uOpacity;
 uniform float uFlicker;
 uniform float uDashPhase;
-uniform vec3 uParts; // ring, dashed ring, glow: 1 = shown
+uniform vec4 uParts; // ring, dashed ring, glow, north marker: 1 = shown
 out vec4 fragColor;
 
 float line(float r, float at) {
   return 1.0 - smoothstep(0.0, 1.3 * fwidth(r), abs(r - at));
+}
+
+// A "^" between the two circles at the top of the image (+y in the disc's UV), which is north.
+float north(vec2 uv) {
+  vec2 p = uv - vec2(0.0, 0.9625);
+  float s = 0.035 / 0.04;
+  float d = abs(p.y - (0.0175 - abs(p.x) * s)) / sqrt(1.0 + s * s);
+  return step(abs(p.x), 0.04) * (1.0 - smoothstep(0.0, 1.8 * fwidth(d), d));
 }
 
 void main() {
@@ -217,7 +225,7 @@ void main() {
   float ring = line(r, 0.93);
   float dashes = step(0.55, fract(angle * 64.0 + uDashPhase)) * line(r, 0.985);
   float pool = 0.12 * (1.0 - smoothstep(0.2, 0.93, r));
-  float a = (ring * 0.85 * uParts.x + dashes * 0.85 * uParts.y + pool * uParts.z) * uOpacity * uFlicker;
+  float a = (ring * 0.85 * uParts.x + dashes * 0.85 * uParts.y + pool * uParts.z + north(vUV) * 0.9 * uParts.w) * uOpacity * uFlicker;
   fragColor = vec4(uColor * a, a * 0.25);
 }`;
 
@@ -622,7 +630,7 @@ export default class HoloRenderer {
     // The projector stays put on the floor: panning and zooming only move the content across and above it.
     this.discShader = new PIXI.Shader(disc, {
       uCamera: this.discCameraUniform, uTarget: new Float32Array(2), uCenter: this.centerUniform, uColor: this.color,
-      uOpacity: 1, uFlicker: 1, uDashPhase: 0, uParts: new Float32Array(3)
+      uOpacity: 1, uFlicker: 1, uDashPhase: 0, uParts: new Float32Array(4)
     });
     this.panelGeometry = createQuad();
     this.panelShader = new PIXI.Shader(panel, this.#lookUniforms({uPanelShape: new Float32Array([1, 1])}));
@@ -945,7 +953,7 @@ export default class HoloRenderer {
     const display = showTerrain ? terrain.display : "xray";
     this.#applyDisplay(display);
 
-    const parts = [look.ring, look.dashes, look.glow];
+    const parts = [look.ring, look.dashes, look.glow, look.north];
     this.discMesh.visible = parts.some(Boolean);
     this.discShader.uniforms.uParts.set(parts.map(Number));
     const image = this.#image;

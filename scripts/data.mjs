@@ -38,6 +38,8 @@ export const DEFAULTS = Object.freeze({
     ring: true,
     dashes: true,
     glow: true,
+    /** A small "^" between the projector's circles marking north, taken to be the top of the image. */
+    north: true,
     /** Density of the specks of light rising through the hologram (0 = none). */
     motes: 0.5,
     /** Show waypoint labels. */
@@ -84,7 +86,7 @@ export const DEFAULTS = Object.freeze({
 
 /** Defaults that differ per mode: signs face the viewer, hold still and have no projector disc. */
 const MODE_DEFAULTS = Object.freeze({
-  text: {interactive: false, camera: {yaw: 0, pitch: Math.PI / 2, spin: 0}, look: {ring: false, dashes: false, glow: false, motes: 0}}
+  text: {interactive: false, camera: {yaw: 0, pitch: Math.PI / 2, spin: 0}, look: {ring: false, dashes: false, glow: false, north: false, motes: 0}}
 });
 
 /**
