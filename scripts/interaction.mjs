@@ -6,7 +6,7 @@ import {MAX_DIST, MAX_PITCH, MIN_DIST, MIN_PITCH} from "./holo-renderer.mjs";
 import {closeCard, isCardEvent, openCard, updateCard} from "./pin-card.mjs";
 import {closeMeasureCard, isMeasureCardEvent, openMeasureCard, updateMeasureCard} from "./measure-card.mjs";
 import {writeHolo} from "./links.mjs";
-import {arrivalCamera, moveMap} from "./maps.mjs";
+import {arrivalCamera, moveMap, updatePortal} from "./maps.mjs";
 import {hideRing, isRingEvent, refreshRing, setGlyphEnabled, setGlyphOn, setStrip, showRing} from "./ring.mjs";
 import {simplifyStroke} from "./stroke-layer.mjs";
 import {getHolograms, showLiveCamera} from "./tile-holo.mjs";
@@ -265,7 +265,9 @@ function onPointerDown(event) {
   }
   // A pressed pin opens its card on click; it's only dragged when unlocked (a locked pin lets the drag orbit).
   const pressed = ["draw", "erase", "measure", "adjust"].includes(tool) ? null : holo.markerAt(texturePoint);
-  const locked = !!holo.markers.find(m => m.id === pressed)?.locked;
+  // Portals belong to their map's journal: players can never drag them.
+  const pressedMarker = holo.markers.find(m => m.id === pressed);
+  const locked = !!pressedMarker?.locked || (!!pressedMarker?.portal && !game.user.isGM);
   // In the ruler's second mode, a press on a measurement's end dot grabs it.
   const end = ((tool === "adjust") && !event.shiftKey) ? holo.measureEndAt(texturePoint) : null;
   const measureEnd = end && grabMeasureEnd(holo, end);
@@ -369,7 +371,7 @@ function onPointerUp(event) {
   }
   if ( label && !moved ) return openMeasure(tile, holo, label);
   const portal = pressed && holo.markers.find(m => m.id === pressed)?.portal;
-  if ( pressed && !moved ) return portal ? travel(tile, holo, portal) : openMarkerCard(tile, holo, pressed);
+  if ( pressed && !moved ) return portal ? openPortalCard(tile, holo, pressed, portal) : openMarkerCard(tile, holo, pressed);
   if ( marker ) {
     if ( portal ) {
       // The moved portal stays on show until the map's new spot is saved (see HoloRenderer#configure).
@@ -586,15 +588,28 @@ function openMarkerCard(tile, holo, id) {
     update: changes => history.edit(tile.document, "markers", {type: "update", id, changes},
       holo.annotation("markers", id)),
     remove: () => history.edit(tile.document, "markers", {type: "delete", id}, holo.annotation("markers", id)),
-    focus: () => {
-      const marker = holo.markers.find(m => m.id === id);
-      if ( !marker ) return;
-      const camera = {...holo.camera, ...holo.surfaceTarget(marker.u, marker.v)};
-      showLiveCamera(tile.document, camera);
-      broadcastCamera(tile.document, camera);
-      saveDriverChanges(tile.document, {camera});
-    }
+    focus: () => focusMarker(tile, holo, id)
   });
+}
+
+/** A portal's card: enter its map, focus it, and (GMs) rename the map or restyle the portal. */
+function openPortalCard(tile, holo, id, uuid) {
+  closeMeasureCard();
+  openCard(tile, holo, id, {
+    update: changes => updatePortal(uuid, changes),
+    enter: () => travel(tile, holo, uuid),
+    focus: () => focusMarker(tile, holo, id)
+  }, {portal: true});
+}
+
+/** Centre the view on a waypoint or portal. */
+function focusMarker(tile, holo, id) {
+  const marker = holo.markers.find(m => m.id === id);
+  if ( !marker ) return;
+  const camera = {...holo.camera, ...holo.surfaceTarget(marker.u, marker.v)};
+  showLiveCamera(tile.document, camera);
+  broadcastCamera(tile.document, camera);
+  saveDriverChanges(tile.document, {camera});
 }
 
 /**

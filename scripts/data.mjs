@@ -141,12 +141,22 @@ export function getMaps(doc, link=getLink(doc)) {
   return {home, away: (target && (target !== home)) ? target : null};
 }
 
-/** Maps placed on a map, as {uuid, id, name, u, v} (u/v: their spot on its image). */
+/**
+ * Maps placed on a map, as {uuid, id, name, u, v, size, color, locked}: their spot on its image and how their portal
+ * looks there (size tier like a waypoint's; color null = the hologram's colour; locked = GMs can't drag it either).
+ */
 export function mapChildren(uuid) {
   if ( !uuid ) return [];
   return game.journal.filter(j => j.getFlag(MODULE_ID, "state")?.parent?.uuid === uuid).map(j => {
-    const {u, v} = j.getFlag(MODULE_ID, "state").parent;
-    return {uuid: j.uuid, id: j.id, name: j.name, u: Math.clamp(Number(u) || 0, 0, 1), v: Math.clamp(Number(v) || 0, 0, 1)};
+    const {u, v, size, color, locked} = j.getFlag(MODULE_ID, "state").parent;
+    return {
+      uuid: j.uuid, id: j.id, name: j.name,
+      u: Math.clamp(Number(u) || 0, 0, 1),
+      v: Math.clamp(Number(v) || 0, 0, 1),
+      size: (size in MARKER_SIZES) ? Number(size) : 3,
+      color: /^#[0-9a-f]{6}$/i.test(color) ? color : null,
+      locked: locked === true
+    };
   });
 }
 

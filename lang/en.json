@@ -125,6 +125,10 @@
       },
       "Lock": "Lock: can't be dragged",
       "HintLocked": "Locked: unlock it to drag it again.",
+      "PortalTitle": "Map",
+      "Enter": "Enter",
+      "PortalHint": "Enter shows this map for everyone watching. The label renames the map; drag the portal to move it.",
+      "PortalHintPlayer": "Enter shows this map for everyone watching.",
       "Size": {
         "1": "Small",
         "2": "Medium",

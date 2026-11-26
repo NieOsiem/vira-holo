@@ -1166,8 +1166,8 @@ export default class HoloRenderer {
    */
   get markers() {
     const {look, map} = this.data;
-    const portals = map.children.map(({uuid, id, name, u, v}) => ({id, u, v, label: name, glyph: "portal",
-      color: look.color, size: 3, locked: !game.user.isGM, portal: uuid}));
+    const portals = map.children.map(({uuid, id, name, u, v, size, color, locked}) => ({id, u, v, label: name,
+      glyph: "portal", color: color ?? look.color, size, locked, portal: uuid}));
     return [...this.data.annotations.markers, ...portals].map(m => {
       const live = this.#liveMarkers.get(m.id);
       return live ? {...m, ...live} : m;

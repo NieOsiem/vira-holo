@@ -7,7 +7,8 @@ const PENDING_MS = 3000;
 /**
  * @typedef {object} CardActions
  * @property {(changes: object) => void} update
- * @property {() => void} remove
+ * @property {() => void} [remove]   Waypoints only
+ * @property {() => void} [enter]    Portals only: travel into the map
  * @property {() => void} focus
  */
 
@@ -16,23 +17,28 @@ const PENDING_MS = 3000;
 let card = null;
 
 /**
- * Open the editor for one waypoint next to its pin.
+ * Open the editor for one waypoint next to its pin, or the card of a portal: a map placed here, which it enters.
+ * A portal has no glyph choice or delete; only GMs rename its map or restyle it (it's stored with the map).
  * @param {Tile} tile
  * @param {HoloRenderer} holo
  * @param {string} id
  * @param {CardActions} actions
+ * @param {{portal?: boolean}} [options]
  */
-export function openCard(tile, holo, id, actions) {
+export function openCard(tile, holo, id, actions, {portal=false}={}) {
   closeCard();
   const localize = key => game.i18n.localize(`VIRAHOLO.Card.${key}`);
+  const editable = !portal || game.user.isGM;
   const element = document.createElement("div");
   element.className = "vira-holo-card";
+  element.classList.toggle("portal", portal);
+  element.classList.toggle("readonly", !editable);
   element.hidden = true;
   element.style.setProperty("--holo-color", holo.data.look.color);
   element.innerHTML = `
-    <header><b>${localize("Title")}</b><button type="button" class="close" aria-label="${localize("Close")}">✕</button></header>
+    <header><b>${localize(portal ? "PortalTitle" : "Title")}</b><button type="button" class="close" aria-label="${localize("Close")}">✕</button></header>
     <input type="text" class="label" maxlength="${MAX_LABEL_LENGTH}" placeholder="${localize("Label")}"
-      aria-label="${localize("Label")}">
+      aria-label="${localize("Label")}" ${editable ? "" : "readonly"}>
     <div class="glyphs">${MARKER_GLYPHS.map(glyph => `<button type="button" data-glyph="${glyph}"
       aria-label="${localize(`Glyph.${glyph}`)}" data-tooltip="${localize(`Glyph.${glyph}`)}">${GLYPH_CHARACTERS[glyph]}</button>`).join("")}</div>
     <div class="sizes">${Object.keys(MARKER_SIZES).map(size => `<button type="button" data-size="${size}"
@@ -44,11 +50,12 @@ export function openCard(tile, holo, id, actions) {
       <button type="button" class="lock" aria-label="${localize("Lock")}" data-tooltip="${localize("Lock")}">
         <i class="fa-solid fa-lock-open" inert></i></button>
       <button type="button" class="focus">${localize("Focus")}</button>
-      <button type="button" class="delete">${localize("Delete")}</button>
+      ${portal ? `<button type="button" class="enter">${localize("Enter")}</button>`
+    : `<button type="button" class="delete">${localize("Delete")}</button>`}
     </div>
     <p class="hint"></p>`;
   document.body.append(element);
-  card = {element, tile, holo, id, actions, pendingUntil: performance.now() + PENDING_MS, shown: ""};
+  card = {element, tile, holo, id, actions, portal, pendingUntil: performance.now() + PENDING_MS, shown: ""};
   holo.selectedMarker = id;
 
   element.querySelector(".close").addEventListener("click", closeCard);
@@ -73,9 +80,13 @@ export function openCard(tile, holo, id, actions) {
   const custom = element.querySelector(".custom");
   custom.addEventListener("change", () => actions.update({color: custom.value}));
   element.querySelector(".focus").addEventListener("click", () => actions.focus());
-  element.querySelector(".delete").addEventListener("click", () => {
+  element.querySelector(".delete")?.addEventListener("click", () => {
     actions.remove();
     closeCard();
+  });
+  element.querySelector(".enter")?.addEventListener("click", () => {
+    closeCard();
+    actions.enter();
   });
   updateCard();
 }
@@ -123,7 +134,8 @@ export function updateCard() {
   for ( const button of element.querySelectorAll("[data-glyph]") ) {
     button.classList.toggle("on", button.dataset.glyph === marker.glyph);
   }
-  element.querySelector(".hint").textContent = game.i18n.localize(`VIRAHOLO.Card.${marker.locked ? "HintLocked" : "Hint"}`);
+  const hint = card.portal ? (game.user.isGM ? "PortalHint" : "PortalHintPlayer") : "Hint";
+  element.querySelector(".hint").textContent = game.i18n.localize(`VIRAHOLO.Card.${marker.locked ? "HintLocked" : hint}`);
   for ( const button of element.querySelectorAll("[data-ink]") ) {
     button.classList.toggle("on", button.dataset.ink.toLowerCase() === marker.color.toLowerCase());
   }

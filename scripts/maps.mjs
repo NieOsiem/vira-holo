@@ -1,4 +1,5 @@
-import {DEFAULTS, MODULE_ID, deletionUpdate, getHoloData, getLink, getMaps, getStateJournal} from "./data.mjs";
+import {DEFAULTS, MARKER_SIZES, MAX_LABEL_LENGTH, MODULE_ID, deletionUpdate, getHoloData, getLink, getMaps,
+  getStateJournal} from "./data.mjs";
 import {createLink, createStateJournal} from "./links.mjs";
 
 /** Parent chains are walked at most this far, so a broken (circular) chain can't hang anything. */
@@ -82,6 +83,25 @@ export async function moveMap(uuid, {u, v}) {
   const map = getStateJournal(uuid);
   if ( !map?.getFlag(MODULE_ID, "state").parent ) return;
   return map.update({[`flags.${MODULE_ID}.state.parent`]: {u: Math.clamp(u, 0, 1), v: Math.clamp(v, 0, 1)}});
+}
+
+/**
+ * Restyle a map's portal on its parent (size tier, ink, lock) or rename the map (label). GM only: it changes the
+ * map journal.
+ * @param {string} uuid
+ * @param {{label?: string, size?: number, color?: string, locked?: boolean}} changes
+ */
+export async function updatePortal(uuid, {label, size, color, locked}) {
+  const map = getStateJournal(uuid);
+  if ( !map?.getFlag(MODULE_ID, "state").parent ) return;
+  const update = {};
+  const name = String(label ?? "").trim().slice(0, MAX_LABEL_LENGTH);
+  if ( name ) update.name = name;
+  const path = `flags.${MODULE_ID}.state.parent`;
+  if ( size in MARKER_SIZES ) update[`${path}.size`] = Number(size);
+  if ( /^#[0-9a-f]{6}$/i.test(color) ) update[`${path}.color`] = color;
+  if ( typeof locked === "boolean" ) update[`${path}.locked`] = locked;
+  if ( !foundry.utils.isEmpty(update) ) return map.update(update);
 }
 
 /**

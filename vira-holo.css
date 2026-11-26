@@ -265,6 +265,16 @@
   border-color: #ff4d5e;
   box-shadow: 0 0 8px rgb(255 77 94 / 0.4);
 }
+/* Portals: no glyph choice; players only get Focus and Enter. */
+.vira-holo-card.portal .glyphs,
+.vira-holo-card.readonly .sizes,
+.vira-holo-card.readonly .inks,
+.vira-holo-card.readonly .actions button.lock { display: none; }
+.vira-holo-card .actions button.enter {
+  color: #fff;
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 28%, transparent);
+}
 .vira-holo-card .hint {
   position: relative;
   margin: 7px 0 0;
