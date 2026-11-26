@@ -1,0 +1,110 @@
+import {MODULE_ID} from "./data.mjs";
+import HoloRenderer from "./holo-renderer.mjs";
+
+/** @type {Map<Tile, HoloRenderer>} */
+const holograms = new Map();
+
+/**
+ * Hit-testing normally reads the tile texture's alpha back from the GPU once and caches it. For a live render
+ * texture that snapshot would be stale (and the readback costly), so the whole tile rectangle counts as solid.
+ */
+const SOLID_ALPHA = Object.freeze({data: new Uint8Array([255]), width: 1, height: 1, minX: 0, minY: 0, maxX: 1, maxY: 1});
+
+export function registerTileHooks() {
+  Hooks.on("drawTile", syncTile);
+  Hooks.on("refreshTile", onRefreshTile);
+  Hooks.on("destroyTile", tile => detach(tile, {restore: false}));
+  Hooks.on("updateTile", onUpdateTile);
+  Hooks.once("canvasReady", () => canvas.app.ticker.add(renderHolograms));
+}
+
+/** @param {Tile} tile */
+function syncTile(tile) {
+  if ( tile.isPreview ) return;
+  const enabled = !!tile.document.getFlag(MODULE_ID, "enabled");
+  let holo = holograms.get(tile);
+  if ( !enabled ) {
+    if ( holo ) detach(tile);
+    return;
+  }
+  if ( !tile.mesh ) adoptMesh(tile);
+  if ( holo ) holo.configure();
+  else {
+    holo = new HoloRenderer(tile);
+    holograms.set(tile, holo);
+  }
+  claimMesh(tile, holo);
+}
+
+/**
+ * Foundry gives tiles without an image a placeholder instead of a mesh. A text hologram needs no image, so give
+ * the tile a mesh of its own; every use of the placeholder in core is guarded by the mesh being absent.
+ */
+function adoptMesh(tile) {
+  tile.mesh = canvas.primary.addTile(tile);
+  tile.bg?.destroy();
+  tile.bg = null;
+  tile.renderFlags.set({refresh: true});
+}
+
+/**
+ * Show the hologram's render texture in place of the tile's image, so the tile keeps its sorting, occlusion,
+ * fog masking and level handling (core and the Levels module) unchanged.
+ */
+function claimMesh(tile, holo) {
+  const mesh = tile.mesh;
+  if ( mesh.texture !== holo.renderTexture ) mesh.texture = holo.renderTexture;
+  mesh._textureAlphaData = SOLID_ALPHA;
+  tile.renderFlags.set({refreshSize: true});
+}
+
+/**
+ * @param {Tile} tile
+ * @param {object} [options]
+ * @param {boolean} [options.restore=true]  Give the tile its own image (or placeholder) back. Not wanted while
+ *                                          the tile is being destroyed.
+ */
+function detach(tile, {restore=true}={}) {
+  const holo = holograms.get(tile);
+  if ( !holo ) return;
+  holograms.delete(tile);
+  const mesh = tile.mesh;
+  if ( restore && mesh && !mesh.destroyed && (mesh.texture === holo.renderTexture) ) {
+    // An adopted mesh (no image) goes back to Foundry's placeholder via a redraw.
+    if ( tile.texture ) {
+      mesh.texture = tile.texture;
+      tile.renderFlags.set({refreshSize: true});
+    }
+    else tile.renderFlags.set({redraw: true});
+  }
+  holo.destroy();
+}
+
+function onRefreshTile(tile, flags) {
+  const holo = holograms.get(tile);
+  if ( !holo || !flags.refreshSize ) return;
+  // A resized render texture fires a texture update, which drops the alpha data and needs a fresh mesh size.
+  if ( holo.resize() ) claimMesh(tile, holo);
+  else tile.mesh._textureAlphaData = SOLID_ALPHA;
+}
+
+function onUpdateTile(doc, changes) {
+  const flagsChanged = (MODULE_ID in (changes.flags ?? {})) || (`-=${MODULE_ID}` in (changes.flags ?? {}));
+  if ( flagsChanged && doc.object ) syncTile(doc.object);
+}
+
+function isOnScreen(tile, screen) {
+  const mesh = tile.mesh;
+  if ( !tile.visible || !mesh?.visible || !mesh.renderable || (mesh.worldAlpha <= 0) ) return false;
+  return mesh.getBounds(true).intersects(screen);
+}
+
+function renderHolograms() {
+  if ( !holograms.size ) return;
+  const {renderer, ticker} = canvas.app;
+  for ( const [tile, holo] of holograms ) {
+    if ( !isOnScreen(tile, renderer.screen) ) continue;
+    holo.update(ticker.deltaMS);
+    holo.render(renderer);
+  }
+}

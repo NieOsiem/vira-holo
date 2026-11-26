@@ -10,7 +10,14 @@
   "styles": [
     "vira-holo.css"
   ],
-  "languages": [],
+  "languages": [
+    {
+      "lang": "en",
+      "name": "English",
+      "path": "lang/en.json"
+    }
+  ],
+  "socket": true,
   "compatibility": {
     "minimum": "12",
     "verified": "14"
