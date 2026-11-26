@@ -45,7 +45,7 @@ const MEASURE_DASHES = 14;
 const WIRE_LINES = 40;
 const CONTOUR_LEVELS = 12;
 /** Height (0-1) at which the heightmap counts as land: the coastline of an island, drawn in the wireframe styles. */
-const COAST_HEIGHT = 0.03;
+const COAST_HEIGHT = 0.012;  // ~3/255: heights are read back as 8-bit
 /**
  * View depth mapped to the far end of the depth buffer (the near end is the camera). Everything drawn is well within
  * it at any camera distance, so one fixed range serves every mesh, the projector disc's own camera included.
@@ -283,7 +283,7 @@ void main() {
   float depth = depthFade(vDepth, 0.6);
   float level = vHeight * ${CONTOUR_LEVELS.toFixed(1)};
   float distToLevel = abs(fract(level + 0.5) - 0.5);
-  float contour = (1.0 - smoothstep(0.0, 1.2 * fwidth(level), distToLevel)) * smoothstep(0.02, 0.05, vHeight);
+  float contour = (1.0 - smoothstep(0.0, 1.2 * fwidth(level), distToLevel)) * smoothstep(0.008, 0.02, vHeight);
   vec3 lines = uColor * contour * uContours * 0.9 * uFlicker * depth;
   if ( uLinesOnly > 0.5 ) {
     float coast = 1.0 - smoothstep(0.0, 1.5 * fwidth(vHeight), abs(vHeight - ${COAST_HEIGHT.toFixed(3)}));
@@ -313,7 +313,7 @@ ${VOLUME}
 out vec4 fragColor;
 
 void main() {
-  float land = mix(0.15, 1.0, smoothstep(0.01, 0.05, vHeight));
+  float land = mix(0.15, 1.0, smoothstep(0.004, 0.02, vHeight));
   float depth = mix(1.0, 0.35, clamp((vDepth + 1.0) * 0.5, 0.0, 1.0));
   float a = uWire * uOpacity * uFlicker * land * depth * volumeFade();
   fragColor = vec4(uColor * (0.8 + 0.6 * vHeight) * a, a * 0.15);
