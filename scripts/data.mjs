@@ -34,8 +34,10 @@ export const DEFAULTS = Object.freeze({
     scanlines: 0.5,
     flicker: 0.3,
     lift: 0.12,
-    /** Show the projector disc under the hologram. */
-    projector: true,
+    /** Parts of the projector under the hologram: its solid ring, its dashed ring and its soft glow. */
+    ring: true,
+    dashes: true,
+    glow: true,
     /** Density of the specks of light rising through the hologram (0 = none). */
     motes: 0.5,
     /** Show waypoint labels. */
@@ -82,7 +84,7 @@ export const DEFAULTS = Object.freeze({
 
 /** Defaults that differ per mode: signs face the viewer, hold still and have no projector disc. */
 const MODE_DEFAULTS = Object.freeze({
-  text: {interactive: false, camera: {yaw: 0, pitch: Math.PI / 2, spin: 0}, look: {projector: false, motes: 0}}
+  text: {interactive: false, camera: {yaw: 0, pitch: Math.PI / 2, spin: 0}, look: {ring: false, dashes: false, glow: false, motes: 0}}
 });
 
 /**
@@ -212,6 +214,11 @@ export function getHoloData(doc) {
       if ( state[key] !== undefined ) source[key] = foundry.utils.deepClone(state[key]);
     }
     if ( state.look ) source.look = foundry.utils.deepClone(state.look);
+  }
+  // Before the projector's parts were separate, one "projector" switch covered all of them.
+  if ( source.look && ("projector" in source.look) ) {
+    for ( const part of ["ring", "dashes", "glow"] ) source.look[part] ??= source.look.projector;
+    delete source.look.projector;
   }
   const data = foundry.utils.deepClone(DEFAULTS);
   foundry.utils.mergeObject(data, MODE_DEFAULTS[source.mode ?? data.mode] ?? {});

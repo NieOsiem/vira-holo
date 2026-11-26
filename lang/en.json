@@ -79,7 +79,9 @@
         "scanlines": "Scanlines",
         "flicker": "Flicker",
         "lift": "Float height",
-        "projector": "Projector disc",
+        "ring": "Projector ring",
+        "dashes": "Projector dashed ring",
+        "glow": "Projector glow",
         "labels": "Show labels",
         "motes": "Data motes"
       },

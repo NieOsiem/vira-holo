@@ -24,9 +24,21 @@
     </div>
     {{/each}}
     <div class="form-group">
-      <label for="{{partId}}-projector">{{localize "VIRAHOLO.Config.look.projector"}}</label>
+      <label for="{{partId}}-ring">{{localize "VIRAHOLO.Config.look.ring"}}</label>
       <div class="form-fields">
-        <input type="checkbox" id="{{partId}}-projector" name="{{flags}}.look.projector" {{checked holo.look.projector}}>
+        <input type="checkbox" id="{{partId}}-ring" name="{{flags}}.look.ring" {{checked holo.look.ring}}>
+      </div>
+    </div>
+    <div class="form-group">
+      <label for="{{partId}}-dashes">{{localize "VIRAHOLO.Config.look.dashes"}}</label>
+      <div class="form-fields">
+        <input type="checkbox" id="{{partId}}-dashes" name="{{flags}}.look.dashes" {{checked holo.look.dashes}}>
+      </div>
+    </div>
+    <div class="form-group">
+      <label for="{{partId}}-glow">{{localize "VIRAHOLO.Config.look.glow"}}</label>
+      <div class="form-fields">
+        <input type="checkbox" id="{{partId}}-glow" name="{{flags}}.look.glow" {{checked holo.look.glow}}>
       </div>
     </div>
   </fieldset>

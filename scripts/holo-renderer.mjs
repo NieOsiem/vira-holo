@@ -182,23 +182,43 @@ void main() {
   gl_FragColor = vec4(holo.rgb + uColor * frame * 0.8 * uFlicker, holo.a * uSolidity + frame * 0.2) * volumeFade();
 }`;
 
-const DISC_FRAGMENT = `
+const DISC_VERTEX = `#version 300 es
 precision highp float;
-varying vec2 vUV;
+in vec3 aVertexPosition;
+in vec2 aTextureCoord;
+${CAMERA_UNIFORMS}
+out vec2 vUV;
+out float vDepth;
+${PROJECT}
+void main() {
+  vUV = aTextureCoord;
+  gl_Position = project(aVertexPosition);
+}`;
+
+// The two circles are one device pixel thin whatever the camera does (fwidth), like the terrain wireframe.
+const DISC_FRAGMENT = `#version 300 es
+precision highp float;
+in vec2 vUV;
 uniform vec3 uColor;
 uniform float uOpacity;
 uniform float uFlicker;
 uniform float uDashPhase;
+uniform vec3 uParts; // ring, dashed ring, glow: 1 = shown
+out vec4 fragColor;
+
+float line(float r, float at) {
+  return 1.0 - smoothstep(0.0, 1.3 * fwidth(r), abs(r - at));
+}
 
 void main() {
   float r = length(vUV);
   if ( r > 1.0 ) discard;
   float angle = atan(vUV.y, vUV.x) / 6.2831853 + 0.5;
-  float ring = smoothstep(0.02, 0.0, abs(r - 0.93));
-  float dashes = step(0.55, fract(angle * 64.0 + uDashPhase)) * smoothstep(0.012, 0.0, abs(r - 0.985));
+  float ring = line(r, 0.93);
+  float dashes = step(0.55, fract(angle * 64.0 + uDashPhase)) * line(r, 0.985);
   float pool = 0.12 * (1.0 - smoothstep(0.2, 0.93, r));
-  float a = (ring * 0.7 + dashes * 0.5 + pool) * uOpacity * uFlicker;
-  gl_FragColor = vec4(uColor * a, a * 0.25);
+  float a = (ring * 0.85 * uParts.x + dashes * 0.85 * uParts.y + pool * uParts.z) * uOpacity * uFlicker;
+  fragColor = vec4(uColor * a, a * 0.25);
 }`;
 
 const TERRAIN_VERTEX = `#version 300 es
@@ -421,7 +441,7 @@ let programs;
 function getPrograms() {
   programs ??= {
     panel: PIXI.Program.from(VERTEX, PANEL_FRAGMENT, "vira-holo-panel"),
-    disc: PIXI.Program.from(VERTEX, DISC_FRAGMENT, "vira-holo-disc"),
+    disc: PIXI.Program.from(DISC_VERTEX, DISC_FRAGMENT, "vira-holo-disc"),
     terrain: PIXI.Program.from(TERRAIN_VERTEX, TERRAIN_FRAGMENT, "vira-holo-terrain"),
     wire: PIXI.Program.from(TERRAIN_VERTEX, WIRE_FRAGMENT, "vira-holo-wire"),
     stroke: PIXI.Program.from(STROKE_VERTEX, STROKE_FRAGMENT, "vira-holo-stroke"),
@@ -602,7 +622,7 @@ export default class HoloRenderer {
     // The projector stays put on the floor: panning and zooming only move the content across and above it.
     this.discShader = new PIXI.Shader(disc, {
       uCamera: this.discCameraUniform, uTarget: new Float32Array(2), uCenter: this.centerUniform, uColor: this.color,
-      uOpacity: 1, uFlicker: 1, uDashPhase: 0
+      uOpacity: 1, uFlicker: 1, uDashPhase: 0, uParts: new Float32Array(3)
     });
     this.panelGeometry = createQuad();
     this.panelShader = new PIXI.Shader(panel, this.#lookUniforms({uPanelShape: new Float32Array([1, 1])}));
@@ -925,7 +945,9 @@ export default class HoloRenderer {
     const display = showTerrain ? terrain.display : "xray";
     this.#applyDisplay(display);
 
-    this.discMesh.visible = look.projector;
+    const parts = [look.ring, look.dashes, look.glow];
+    this.discMesh.visible = parts.some(Boolean);
+    this.discShader.uniforms.uParts.set(parts.map(Number));
     const image = this.#image;
     const shaders = showTerrain ? [this.#terrain.surfaceShader, this.#terrain.wireShader, this.#terrain.linesShader] : [this.panelShader];
     for ( const {uniforms} of shaders ) {
