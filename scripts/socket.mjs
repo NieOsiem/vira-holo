@@ -3,6 +3,7 @@ import {getHolograms} from "./tile-holo.mjs";
 
 const EVENT = `module.${MODULE_ID}`;
 const CAMERA_KEYS = ["yaw", "pitch", "dist", "x", "z"];
+const TAU = Math.PI * 2;
 
 export function registerSocket() {
   // The server appends the sender's user ID, so it can be trusted (unlike anything inside the message).
@@ -61,5 +62,7 @@ function pickCamera(camera={}) {
   for ( const key of CAMERA_KEYS ) {
     if ( Number.isFinite(camera[key]) ) out[key] = camera[key];
   }
+  // Spin toggles and drags keep adding to the yaw; keep the saved angle in one turn.
+  if ( "yaw" in out ) out.yaw = ((out.yaw % TAU) + TAU) % TAU;
   return out;
 }

@@ -1,5 +1,7 @@
-import {DEFAULTS, canDrive} from "./data.mjs";
+import {DEFAULTS, canDrive, defaultCamera} from "./data.mjs";
+import HoloConfig from "./holo-config.mjs";
 import {MAX_DIST, MAX_PITCH, MIN_DIST, MIN_PITCH} from "./holo-renderer.mjs";
+import {hideRing, isRingEvent, refreshRing, showRing} from "./ring.mjs";
 import {getHolograms} from "./tile-holo.mjs";
 import {broadcastCamera, saveDriverChanges} from "./socket.mjs";
 
@@ -16,7 +18,10 @@ const CLICK_SLOP = 4;
 /** @type {{tile: Tile, holo: HoloRenderer, pointerId: number, pan: boolean, x: number, y: number,
  *          start: object, camera: object, moved: boolean, lastSent: number}|null} */
 let drag = null;
-/** The hologram the user last pressed on; the wheel zooms it while the pointer stays over it. */
+/**
+ * The hologram the user last pressed on. It shows the tool ring, and the wheel zooms it while the pointer is over
+ * it. Pressing anywhere else lets it go.
+ */
 let engaged = null;
 let lastClick = {tile: null, time: 0};
 let wheelSave = null;
@@ -31,6 +36,24 @@ export function registerInteraction() {
   window.addEventListener("pointerup", onPointerUp, {capture: true});
   window.addEventListener("pointercancel", onPointerUp, {capture: true});
   window.addEventListener("wheel", onWheel, {capture: true, passive: false});
+  Hooks.on("refreshTile", tile => refreshRing(tile));
+  Hooks.on("updateTile", doc => refreshRing(doc.object));
+  Hooks.on("destroyTile", tile => {
+    if ( tile === engaged ) setEngaged(null);
+  });
+  Hooks.on("canvasTearDown", () => setEngaged(null));
+}
+
+/** @param {{tile: Tile, holo: HoloRenderer}|null} hit */
+function setEngaged(hit) {
+  engaged = hit?.tile ?? null;
+  if ( !hit ) return hideRing();
+  const {tile, holo} = hit;
+  showRing(tile, {
+    recenter: () => recenter(tile, holo),
+    spin: () => toggleSpin(tile, holo),
+    settings: () => HoloConfig.open(tile.document)
+  });
 }
 
 function swallow(event) {
@@ -88,9 +111,9 @@ function placeableAt(event) {
 }
 
 function onPointerDown(event) {
-  if ( event.button !== 0 ) return;
+  if ( (event.button !== 0) || isRingEvent(event) ) return;
   const hit = hologramAt(event);
-  engaged = hit?.tile ?? null;
+  if ( hit?.tile !== engaged ) setEngaged(hit);
   if ( !hit ) return;
   swallow(event);
   // Keep receiving the drag outside the window, and drop focus from inputs like a normal canvas click would.
@@ -170,6 +193,14 @@ function panCamera(tile, holo, start, dx, dy) {
   return {x: Math.clamp(start.x - x, -1, 1), z: Math.clamp(start.z - z, -1, 1)};
 }
 
+/** Go back to the mode's starting view. */
+function recenter(tile, holo) {
+  const camera = defaultCamera(holo.data.mode);
+  holo.setLiveCamera(camera);
+  broadcastCamera(tile.document, camera);
+  saveDriverChanges(tile.document, {camera});
+}
+
 /** Stop or restart auto-spin, keeping the hologram where it currently is on screen. */
 function toggleSpin(tile, holo) {
   const {look} = holo.data;
@@ -184,10 +215,7 @@ function toggleSpin(tile, holo) {
 function onWheel(event) {
   if ( !engaged || event.ctrlKey || event.shiftKey || event.altKey || event.metaKey ) return;
   const hit = hologramAt(event);
-  if ( hit?.tile !== engaged ) {
-    engaged = null;
-    return;
-  }
+  if ( hit?.tile !== engaged ) return;
   swallow(event);
   const {tile, holo} = hit;
   const camera = {...holo.camera};

@@ -1,6 +1,63 @@
 {
   "VIRAHOLO": {
     "Title": "Vira Holo",
-    "NoActiveGM": "No GM is connected, so the hologram's new view can't be saved."
+    "NoActiveGM": "No GM is connected, so the hologram's new view can't be saved.",
+    "Mode": {
+      "image": "Image",
+      "terrain": "Terrain",
+      "text": "Text sign"
+    },
+    "Ring": {
+      "recenter": "Recenter view",
+      "spin": "Auto-spin on / off",
+      "settings": "Hologram settings"
+    },
+    "Config": {
+      "Open": "Hologram",
+      "Title": "Hologram: {name}",
+      "General": "Hologram",
+      "Look": "Look",
+      "Control": "View & control",
+      "enabled": "Show as hologram",
+      "mode": "Mode",
+      "image": "Image",
+      "view": "View",
+      "resetView": "Reset view",
+      "interactive": "Grab on canvas",
+      "interactiveHint": "Lets the GM and owners orbit (drag), pan (Shift+drag) and zoom (click, then scroll) the hologram on the canvas.",
+      "owners": "Owners",
+      "ownersHint": "Players who may move the view, like the GM. Their changes are saved through a connected GM.",
+      "noPlayers": "No players in this world.",
+      "terrain": {
+        "heightmap": "Heightmap",
+        "heightmapHint": "Greyscale image covering the same area as the tile's image; brighter is higher.",
+        "relief": "Relief",
+        "resolution": "Mesh detail",
+        "wire": "Wireframe",
+        "contours": "Contour lines"
+      },
+      "text": {
+        "content": "Text",
+        "font": "Font",
+        "defaultFont": "World default",
+        "size": "Size",
+        "sizeHint": "In scene pixels, like drawing text. Text that doesn't fit shrinks to fit.",
+        "align": "Alignment",
+        "left": "Left",
+        "center": "Centre",
+        "right": "Right"
+      },
+      "look": {
+        "color": "Colour",
+        "tint": "Tint",
+        "opacity": "Opacity",
+        "solidity": "Solidity",
+        "scanlines": "Scanlines",
+        "flicker": "Flicker",
+        "spin": "Auto-spin speed",
+        "lift": "Float height",
+        "projector": "Projector disc"
+      }
+    }
   }
 }

@@ -73,3 +73,12 @@ export function canDrive(user, doc) {
   if ( !user ) return false;
   return user.isGM || !!doc.getFlag(MODULE_ID, "owners")?.includes(user.id);
 }
+
+/**
+ * The camera a hologram in this mode starts with.
+ * @param {string} mode
+ * @returns {object}
+ */
+export function defaultCamera(mode) {
+  return foundry.utils.mergeObject(foundry.utils.deepClone(DEFAULTS.camera), MODE_DEFAULTS[mode]?.camera ?? {});
+}
