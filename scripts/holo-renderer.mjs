@@ -52,6 +52,10 @@ const DEPTH_FAR = 24;
 /** How far (in depth-buffer units) wireframe and strokes resting on the terrain are pulled towards the camera. */
 const WIRE_DEPTH_BIAS = 0.0006;
 const STROKE_DEPTH_BIAS = 0.003;
+/** How long the hologram takes to settle after travelling to another map. */
+const TRAVEL_MS = 700;
+/** Content scale a travel starts from: a map entered grows into view, a parent shrinks into it. */
+const TRAVEL_SCALE = {in: 0.3, out: 2.5};
 /** Most data motes, at full density. */
 const MAX_MOTES = 160;
 /** Mote animation repeats every this many seconds; each mote rises a whole number of times per period. */
@@ -661,6 +665,12 @@ export default class HoloRenderer {
   #erased = {strokes: new Map(), measures: new Map()};
   /** Half width of a medium stroke, in render-texture pixels. */
   #strokeHalfWidth = 1;
+  /** UUID of the map shown ("" for a tile on its own settings); undefined before the first configure. */
+  #mapKey;
+  /** Travel transition in progress: {start, from (content scale)}, or null. */
+  #travel = null;
+  /** Content opacity factor during a travel transition. */
+  #fade = 1;
 
   /** Strokes, measurements and waypoints go on top of the content, waypoints last. */
   #addOverlays() {
@@ -692,11 +702,14 @@ export default class HoloRenderer {
       this.#liveMarkers.clear();
       this.#liveMeasurePoints.clear();
     }
+    const mapKey = data.map.uuid ?? "";
+    if ( (this.#mapKey !== undefined) && (mapKey !== this.#mapKey) ) this.#startTravel(data.map.parent?.uuid === this.#mapKey);
+    this.#mapKey = mapKey;
     this.color.set(new PIXI.Color(data.look.color).toRgbArray());
     this.resize();
     const src = (data.mode === "terrain") ? data.terrain.heightmap : null;
     if ( src !== this.#heightmapSrc ) this.#loadHeightmap(src);
-    const linkedSrc = data.link?.share.content ? data.image : null;
+    const linkedSrc = data.imageFromTile ? null : data.image;
     if ( linkedSrc !== this.#linkedImageSrc ) this.#loadLinkedImage(linkedSrc);
     if ( data.mode === "text" ) {
       this.#textPanel ??= new TextPanel();
@@ -719,7 +732,7 @@ export default class HoloRenderer {
   /** The texture shown on the panel or draped over the terrain. */
   get #image() {
     if ( this.#textPanel ) return this.#textPanel.texture;
-    if ( this.data.link?.share.content ) return this.#linkedImage ?? PIXI.Texture.EMPTY;
+    if ( !this.data.imageFromTile ) return this.#linkedImage ?? PIXI.Texture.EMPTY;
     return this.tile.texture ?? PIXI.Texture.EMPTY;
   }
 
@@ -869,7 +882,8 @@ export default class HoloRenderer {
     this.displayYaw = (camera.yaw + this.spinPhase(camera.spin)) % TAU;
     const pitch = Math.clamp(camera.pitch, MIN_PITCH, MAX_PITCH);
     const dist = Math.clamp(camera.dist, MIN_DIST, MAX_DIST);
-    this.cameraUniform.set([this.displayYaw, pitch, dist, this.pixelsPerUnit]);
+    const scale = this.#updateTravel();
+    this.cameraUniform.set([this.displayYaw, pitch, dist, this.pixelsPerUnit * scale]);
     this.discCameraUniform.set([this.displayYaw, pitch, BASE_DIST, this.pixelsPerUnit]);
     this.targetUniform.set([camera.x, camera.z]);
 
@@ -896,7 +910,7 @@ export default class HoloRenderer {
     for ( const {uniforms} of shaders ) {
       uniforms.uImage = image;
       uniforms.uTint = look.tint;
-      uniforms.uOpacity = look.opacity;
+      uniforms.uOpacity = this.#opacity;
       uniforms.uSolidity = look.solidity;
       uniforms.uScan = look.scanlines;
       uniforms.uScanDensity = this.scanDensity;
@@ -934,7 +948,7 @@ export default class HoloRenderer {
     // They rise from the floating surface to a little above the highest terrain.
     uniforms.uHeight.set([look.lift, (showTerrain ? terrain.relief : 0) + 0.4]);
     uniforms.uPointScale = (Math.min(this.width, this.height) / 250) * this.resolution;
-    uniforms.uOpacity = look.opacity;
+    uniforms.uOpacity = this.#opacity;
     uniforms.uFlicker = this.#flicker;
   }
 
@@ -960,6 +974,43 @@ export default class HoloRenderer {
     for ( const layer of [this.strokeLayer, this.liveStrokeLayer, this.measureLines, this.liveMeasureLines] ) {
       layer.setState(tested);
     }
+  }
+
+  /** Content opacity: the look's, faded in after travelling to another map. The projector disc doesn't fade. */
+  get #opacity() {
+    return this.data.look.opacity * this.#fade;
+  }
+
+  /**
+   * Another map is shown: forget what was in progress on the old one, and let the new one settle into view.
+   * @param {boolean} entering   Whether the new map was placed on the old one (else it's the old one's parent)
+   */
+  #startTravel(entering) {
+    this.#travel = {start: performance.now(), from: TRAVEL_SCALE[entering ? "in" : "out"]};
+    this.#liveMarkers.clear();
+    this.#liveMeasurePoints.clear();
+    this.#remoteStrokes.clear();
+    this.#remoteMeasures.clear();
+    for ( const list of Object.values(this.#pending) ) list.clear();
+    for ( const list of Object.values(this.#erased) ) list.clear();
+    this.#liveStroke = null;
+    this.#liveMeasure = null;
+    this.#liveStrokeVersion++;
+    this.#liveMeasureVersion++;
+  }
+
+  /** @returns {number}   Content scale for this frame (1 when no travel transition is running) */
+  #updateTravel() {
+    if ( !this.#travel ) return 1;
+    const t = (performance.now() - this.#travel.start) / TRAVEL_MS;
+    if ( t >= 1 ) {
+      this.#travel = null;
+      this.#fade = 1;
+      return 1;
+    }
+    const eased = 1 - ((1 - t) ** 3);
+    this.#fade = Math.clamp(t * 1.5, 0, 1);
+    return this.#travel.from + ((1 - this.#travel.from) * eased);
   }
 
   /** The camera in effect: a live (unsaved) one while being dragged, otherwise the saved one. */
@@ -1109,9 +1160,15 @@ export default class HoloRenderer {
   /*  Waypoints and picking                       */
   /* -------------------------------------------- */
 
-  /** The waypoints as currently shown, including unsaved drags. */
+  /**
+   * The waypoints as currently shown, including unsaved drags, followed by portals: one for each map placed on the
+   * map shown (`portal` is its UUID; only GMs may drag them).
+   */
   get markers() {
-    return this.data.annotations.markers.map(m => {
+    const {look, map} = this.data;
+    const portals = map.children.map(({uuid, id, name, u, v}) => ({id, u, v, label: name, glyph: "portal",
+      color: look.color, size: 3, locked: !game.user.isGM, portal: uuid}));
+    return [...this.data.annotations.markers, ...portals].map(m => {
       const live = this.#liveMarkers.get(m.id);
       return live ? {...m, ...live} : m;
     });
@@ -1317,7 +1374,7 @@ export default class HoloRenderer {
 
     this.#strokeHalfWidth = Math.clamp(Math.min(this.width, this.height) * 0.0022, 1, 5);
     const style = {
-      opacity: look.opacity, flicker: this.#flicker, width: this.#strokeHalfWidth, pixel: 1 / this.resolution,
+      opacity: this.#opacity, flicker: this.#flicker, width: this.#strokeHalfWidth, pixel: 1 / this.resolution,
       dashPhase: ((game.time.serverTime / 1000) * 1.5) % 1
     };
     for ( const layer of [this.strokeLayer, this.liveStrokeLayer, this.measureLines, this.liveMeasureLines] ) {
@@ -1344,7 +1401,7 @@ export default class HoloRenderer {
         sprite.container.visible = false;
         continue;
       }
-      const alpha = this.data.look.opacity * this.#flicker * this.#volumeAlpha(middle) * depthFade(middle.depth);
+      const alpha = this.#opacity * this.#flicker * this.#volumeAlpha(middle) * depthFade(middle.depth);
       sprite.place(a, b, middle, alpha);
     }
   }
@@ -1471,7 +1528,7 @@ export default class HoloRenderer {
         sprite.container.visible = false;
         continue;
       }
-      const alpha = look.opacity * this.#flicker * this.#volumeAlpha(base) * depthFade(base.depth);
+      const alpha = this.#opacity * this.#flicker * this.#volumeAlpha(base) * depthFade(base.depth);
       sprite.place(base, head, Math.sin(pitch), alpha);
     }
   }

@@ -46,11 +46,13 @@ export function showPreview(doc, userId, preview) {
   }
 }
 
-/** Re-read holograms whose link journal was created, changed or deleted. */
+/**
+ * Re-read holograms when a link journal was created, changed or deleted. Links are also maps, which affect more
+ * than the tiles linked to them (the map shown, portals on its parent, the parent's name), so re-read them all.
+ */
 function onLinkChanged(journal) {
-  for ( const tile of holograms.keys() ) {
-    if ( tile.document.flags[MODULE_ID]?.link?.uuid === journal.uuid ) syncTile(tile);
-  }
+  if ( !journal.flags[MODULE_ID] ) return;
+  for ( const tile of holograms.keys() ) syncTile(tile);
 }
 
 export function registerTileHooks() {

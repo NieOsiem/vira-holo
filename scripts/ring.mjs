@@ -2,7 +2,7 @@ import {DISPLAY_MODES, INKS, STROKE_WIDTHS, getHoloData} from "./data.mjs";
 
 /** Stroke glyphs in the style of the original mockup. */
 const GLYPHS = {
-  recenter: '<circle cx="12" cy="12" r="6.5"/><path d="M12 1.5v4M12 18.5v4M1.5 12h4M18.5 12h4"/>'
+  up: '<path d="M12 16V3.5M6.5 9 12 3.5 17.5 9"/><path d="M3.5 14v5.5h17V14"/>',  recenter: '<circle cx="12" cy="12" r="6.5"/><path d="M12 1.5v4M12 18.5v4M1.5 12h4M18.5 12h4"/>'
     + '<circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none"/>',
   spin: '<path d="M3.5 12a8.5 8.5 0 0 1 14.4-6.1L21 8"/><path d="M21 3.2V8h-4.8"/>'
     + '<path d="M20.5 12a8.5 8.5 0 0 1-14.4 6.1L3 16"/><path d="M3 20.8V16h4.8"/>',
@@ -39,7 +39,7 @@ const ARC_RADIUS = 0.8;
  * @property {(width: number) => void} [onWidth]
  */
 
-/** @type {{tile: Tile, actions: object, terrain: boolean, element: HTMLElement, buttons: HTMLButtonElement[],
+/** @type {{tile: Tile, actions: object, terrain: boolean, up: boolean, element: HTMLElement, buttons: HTMLButtonElement[],
  *          strip: HTMLElement|null, stripGlyph: string|null, display: string|null}|null} */
 let ring = null;
 
@@ -54,8 +54,10 @@ export function showRing(tile, actions) {
   hideRing();
   const element = document.createElement("div");
   element.className = "vira-holo-ring";
-  const terrain = getHoloData(tile.document).mode === "terrain";
-  const names = ["recenter", "spin", ...(terrain ? ["display"] : []), "waypoint", "draw", "erase", "measure", "undo",
+  const {mode, map} = getHoloData(tile.document);
+  const terrain = mode === "terrain";
+  const up = !!map.parent;
+  const names = [...(up ? ["up"] : []), "recenter", "spin", ...(terrain ? ["display"] : []), "waypoint", "draw", "erase", "measure", "undo",
     "redo", ...(game.user.isGM ? ["settings"] : [])];
   const buttons = names.map((name, index) => {
     const button = document.createElement("button");
@@ -74,7 +76,7 @@ export function showRing(tile, actions) {
     element.append(button);
     return button;
   });
-  ring = {tile, actions, terrain, element, buttons, strip: null, stripGlyph: null, display: null};
+  ring = {tile, actions, terrain, up, element, buttons, strip: null, stripGlyph: null, display: null};
   refreshRing();
 }
 
@@ -172,9 +174,9 @@ export function refreshRing(tile) {
   if ( tile.destroyed || !tile.visible || !hud ) return hideRing();
   if ( !element.isConnected ) hud.append(element);
 
-  const {look, camera, mode, terrain: {display}} = getHoloData(tile.document);
-  // The display glyph is only there for terrain: rebuild the ring when the mode changes.
-  if ( (mode === "terrain") !== ring.terrain ) {
+  const {look, camera, mode, map, terrain: {display}} = getHoloData(tile.document);
+  // The display glyph is only there for terrain, and "up" only below another map: rebuild the ring on a change.
+  if ( ((mode === "terrain") !== ring.terrain) || (!!map.parent !== ring.up) ) {
     const {actions} = ring;
     hideRing();
     return showRing(tile, actions);

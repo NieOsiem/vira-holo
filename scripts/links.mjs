@@ -1,41 +1,50 @@
-import {DEFAULT_SHARE, LINK_SECTIONS, MODULE_ID, deletionUpdate, getHoloData, getLink, sectionOf} from "./data.mjs";
+import {DEFAULT_SHARE, LINK_SECTIONS, MODULE_ID, deletionUpdate, getHoloData, getLink, getMaps,
+  sectionOf} from "./data.mjs";
 
 /**
- * Save hologram changes where they live: sections the tile shares through its link go to the link's journal,
- * everything else to the tile (an unlinked image is the tile's own texture). GM side only; drivers' changes reach
- * this through the active GM.
+ * Save hologram changes where they live (see storageOf): the map travelled to, the link's journal or the tile (an
+ * unlinked image is the tile's own texture). GM side only; drivers' changes reach this through the active GM.
  * @param {TileDocument} doc
  * @param {object} changes   In the shape of the hologram data, e.g. {camera: {...}} or {annotations: {markers}}
  */
 export async function writeHolo(doc, changes) {
-  const link = getLink(doc);
-  const shared = {};
-  const own = {};
+  /** @type {Map<ClientDocument, object>} */
+  const targets = new Map();
   for ( const [key, value] of Object.entries(changes) ) {
-    const section = sectionOf(key);
-    if ( link && section && link.share[section] ) shared[key] = value;
-    else own[key] = value;
+    const target = storageOf(doc, sectionOf(key));
+    if ( !targets.has(target) ) targets.set(target, {});
+    targets.get(target)[key] = value;
   }
   const writes = [];
-  if ( !foundry.utils.isEmpty(shared) ) {
-    writes.push(link.journal.update({[`flags.${MODULE_ID}.state`]: shared}));
+  for ( const [target, values] of targets ) {
+    if ( target !== doc ) {
+      writes.push(target.update({[`flags.${MODULE_ID}.state`]: values}));
+      continue;
+    }
+    const {image, ...flags} = values;
+    const update = {};
+    if ( !foundry.utils.isEmpty(flags) ) update[`flags.${MODULE_ID}`] = flags;
+    if ( image !== undefined ) update["texture.src"] = image;
+    if ( !foundry.utils.isEmpty(update) ) writes.push(doc.update(update));
   }
-  const {image, ...flags} = own;
-  const update = {};
-  if ( !foundry.utils.isEmpty(flags) ) update[`flags.${MODULE_ID}`] = flags;
-  if ( image !== undefined ) update["texture.src"] = image;
-  if ( !foundry.utils.isEmpty(update) ) writes.push(doc.update(update));
   return Promise.all(writes);
 }
 
 /**
- * The document that stores a section for this tile: the link's journal if shared, else the tile itself.
+ * The document that stores a section for this tile: away from home, the map shown stores its content and
+ * annotations (and its look, if it has its own); otherwise the link's journal if the section is shared, else the
+ * tile itself.
  * @param {TileDocument} doc
- * @param {string} section
+ * @param {string} [section]
  */
 export function storageOf(doc, section) {
   const link = getLink(doc);
-  return (link?.share[section]) ? link.journal : doc;
+  const {away} = getMaps(doc, link);
+  if ( away ) {
+    const own = (section === "look") && !!away.getFlag(MODULE_ID, "state").look;
+    if ( (section === "content") || (section === "annotations") || own ) return away;
+  }
+  return (section && link?.share[section]) ? link.journal : doc;
 }
 
 /** Every shareable part of a hologram, as it currently looks. */
@@ -68,18 +77,28 @@ async function linksFolder() {
  * @param {string} name
  */
 export async function createLink(doc, name) {
+  const journal = await createStateJournal(name, snapshot(doc));
+  await doc.update({[`flags.${MODULE_ID}.link`]: {uuid: journal.uuid, share: {...DEFAULT_SHARE}}});
+  return journal;
+}
+
+/**
+ * A new link (or map) journal entry in the Holo Links folder.
+ * @param {string} name
+ * @param {object} state   In the shape of the hologram data
+ * @returns {Promise<JournalEntry>}
+ */
+export async function createStateJournal(name, state) {
   const folder = await linksFolder();
-  const journal = await JournalEntry.create({
+  return JournalEntry.create({
     name, folder: folder.id,
-    flags: {[MODULE_ID]: {state: snapshot(doc)}},
+    flags: {[MODULE_ID]: {state}},
     pages: [{
       name: game.i18n.localize("VIRAHOLO.Link.PageName"),
       type: "text",
       text: {content: `<p>${game.i18n.localize("VIRAHOLO.Link.PageText")}</p>`}
     }]
   });
-  await doc.update({[`flags.${MODULE_ID}.link`]: {uuid: journal.uuid, share: {...DEFAULT_SHARE}}});
-  return journal;
 }
 
 /**

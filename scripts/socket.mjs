@@ -2,6 +2,7 @@ import {DISPLAY_MODES, INKS, MAX_STROKE_POINTS, MODULE_ID, STROKE_WIDTHS, canDri
   sanitizeStroke} from "./data.mjs";
 import {applyAnnotationEdit} from "./annotations.mjs";
 import {writeHolo} from "./links.mjs";
+import {travelTarget} from "./maps.mjs";
 import {showLiveCamera, showPreview} from "./tile-holo.mjs";
 
 const EVENT = `module.${MODULE_ID}`;
@@ -60,13 +61,13 @@ export function broadcastPreview(doc, preview) {
 }
 
 /**
- * Save what a driver changed (the camera, including auto-spin, and the terrain's display style). GMs write directly;
- * owners ask the active GM.
+ * Save what a driver changed (the camera, including auto-spin, the terrain's display style, and the map travelled
+ * to: a map UUID, or null for home). GMs write directly; owners ask the active GM.
  * @param {TileDocument} doc
- * @param {{camera?: object, terrain?: {display: string}}} changes
+ * @param {{camera?: object, terrain?: {display: string}, map?: string|null}} changes
  */
 export function saveDriverChanges(doc, changes) {
-  if ( game.user.isGM ) return writeHolo(doc, sanitize(changes));
+  if ( game.user.isGM ) return writeHolo(doc, sanitize(doc, changes));
   const gm = activeGM();
   if ( !gm ) return;
   game.socket.emit(EVENT, {action: "save", uuid: doc.uuid, changes}, {recipients: [gm.id]});
@@ -131,7 +132,7 @@ function onSave({uuid, changes}, sender) {
   if ( game.user !== game.users.activeGM ) return;
   const doc = fromUuidSync(uuid, {strict: false});
   if ( !doc || !canDrive(sender, doc) ) return;
-  writeHolo(doc, sanitize(changes));
+  writeHolo(doc, sanitize(doc, changes));
 }
 
 function onAnnotations({uuid, list, edit}, sender) {
@@ -141,11 +142,16 @@ function onAnnotations({uuid, list, edit}, sender) {
   applyAnnotationEdit(doc, list, edit); // The list name and every field are checked there
 }
 
-/** Only the fields a driver may change: camera numbers and a known display style. */
-function sanitize({camera, terrain}={}) {
+/**
+ * Only the fields a driver may change: camera numbers, a known display style, and travel to a neighbouring map
+ * (the parent, a map placed on this one, or home).
+ */
+function sanitize(doc, {camera, terrain, map}={}) {
   const changes = {};
   if ( camera ) changes.camera = pickCamera(camera);
   if ( DISPLAY_MODES.includes(terrain?.display) ) changes.terrain = {display: terrain.display};
+  const target = (map === undefined) ? undefined : travelTarget(doc, map);
+  if ( target !== undefined ) changes.camera = {...changes.camera, map: target};
   return changes;
 }
 

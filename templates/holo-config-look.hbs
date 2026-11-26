@@ -1,5 +1,14 @@
 <section class="tab scrollable{{#if tab.active}} active{{/if}}" data-group="{{tab.group}}" data-tab="{{tab.id}}">
   <fieldset>
+    {{#if awayFromHome}}
+    <div class="form-group">
+      <label for="{{partId}}-own-look">{{localize "VIRAHOLO.Maps.OwnLook"}}</label>
+      <div class="form-fields">
+        <input type="checkbox" id="{{partId}}-own-look" name="{{flags}}.map.ownLook" {{checked holo.map.ownLook}}>
+      </div>
+      <p class="hint">{{localize "VIRAHOLO.Maps.OwnLookHint"}}</p>
+    </div>
+    {{/if}}
     <div class="form-group">
       <label>{{localize "VIRAHOLO.Config.look.color"}}</label>
       <div class="form-fields">

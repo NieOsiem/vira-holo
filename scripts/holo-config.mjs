@@ -1,6 +1,9 @@
-import {DISPLAY_MODES, LINK_SECTIONS, MODULE_ID, UNITS, defaultCamera, getHoloData} from "./data.mjs";
+import {DISPLAY_MODES, LINK_SECTIONS, MODULE_ID, UNITS, defaultCamera, deletionUpdate, getHoloData,
+  getStateJournal} from "./data.mjs";
 import * as history from "./history.mjs";
 import {createLink, joinLink, leaveLink, linkChoices, writeHolo} from "./links.mjs";
+import {addMapAbove, addMapInside, arrivalCamera, parentChoices, setParent} from "./maps.mjs";
+import {saveDriverChanges} from "./socket.mjs";
 
 const {HandlebarsApplicationMixin, DocumentSheetV2} = foundry.applications.api;
 
@@ -32,6 +35,7 @@ const TABS = [
   {id: "look", icon: "fa-solid fa-palette"},
   {id: "annotations", icon: "fa-solid fa-location-dot"},
   {id: "link", icon: "fa-solid fa-link"},
+  {id: "maps", icon: "fa-solid fa-sitemap"},
   {id: "view", icon: "fa-solid fa-sliders"}
 ];
 
@@ -52,7 +56,11 @@ export default class HoloConfig extends HandlebarsApplicationMixin(DocumentSheet
       createLink: HoloConfig.#onCreateLink,
       joinLink: HoloConfig.#onJoinLink,
       leaveLink: HoloConfig.#onLeaveLink,
-      openLink: HoloConfig.#onOpenLink
+      openLink: HoloConfig.#onOpenLink,
+      addMapAbove: HoloConfig.#onAddMapAbove,
+      addMapInside: HoloConfig.#onAddMapInside,
+      travel: HoloConfig.#onTravel,
+      goHome: HoloConfig.#onGoHome
     }
   };
 
@@ -62,6 +70,7 @@ export default class HoloConfig extends HandlebarsApplicationMixin(DocumentSheet
     look: {template: `modules/${MODULE_ID}/templates/holo-config-look.hbs`, scrollable: [""]},
     annotations: {template: `modules/${MODULE_ID}/templates/holo-config-annotations.hbs`, scrollable: [""]},
     link: {template: `modules/${MODULE_ID}/templates/holo-config-link.hbs`, scrollable: [""]},
+    maps: {template: `modules/${MODULE_ID}/templates/holo-config-maps.hbs`, scrollable: [""]},
     view: {template: `modules/${MODULE_ID}/templates/holo-config-view.hbs`, scrollable: [""]}
   };
 
@@ -117,6 +126,9 @@ export default class HoloConfig extends HandlebarsApplicationMixin(DocumentSheet
           label: `VIRAHOLO.Config.Tabs.${id}`
         }];
       })),
+      parentChoices: holo.map.uuid ? parentChoices(holo.map.uuid) : {},
+      mapChildren: holo.map.children,
+      awayFromHome: !holo.map.home,
       linkChoices: choices,
       hasLinks: !foundry.utils.isEmpty(choices),
       shareOptions: Object.keys(LINK_SECTIONS).map(section => ({
@@ -156,7 +168,10 @@ export default class HoloConfig extends HandlebarsApplicationMixin(DocumentSheet
    */
   _processFormData(event, form, formData) {
     const submitted = foundry.utils.flattenObject(super._processFormData(event, form, formData));
-    const current = foundry.utils.flattenObject({flags: {[MODULE_ID]: getHoloData(this.document)}});
+    const holo = getHoloData(this.document);
+    const current = foundry.utils.flattenObject({flags: {[MODULE_ID]: holo}});
+    // Map fields (under "map", like the hologram data's description of the map) edit the map's journal instead.
+    current[`flags.${MODULE_ID}.map.parentUuid`] = holo.map.parent?.uuid ?? "";
     // v14 renamed objectsEqual to equals (which also compares primitives and arrays).
     const equals = foundry.utils.equals ?? ((a, b) => foundry.utils.objectsEqual({v: a}, {v: b}));
     const changes = {};
@@ -171,9 +186,39 @@ export default class HoloConfig extends HandlebarsApplicationMixin(DocumentSheet
    * @override
    */
   async _processSubmitData(event, form, submitData) {
-    const changes = submitData.flags?.[MODULE_ID];
+    const {map, ...changes} = submitData.flags?.[MODULE_ID] ?? {};
+    if ( map ) await this.#updateMap(map);
     if ( changes && !foundry.utils.isEmpty(changes) ) await writeHolo(this.document, changes);
     return {};
+  }
+
+  /** Rename the map shown, move it to another parent, or give it its own look (or drop it). */
+  async #updateMap({name, parentUuid, ownLook}) {
+    const data = getHoloData(this.document);
+    const map = getStateJournal(data.map.uuid);
+    if ( !map ) return;
+    if ( name?.trim() ) await map.update({name: name.trim()});
+    if ( parentUuid !== undefined ) await setParent(map, parentUuid || null);
+    if ( ownLook === undefined ) return;
+    const path = `flags.${MODULE_ID}.state.look`;
+    await map.update(ownLook ? {[path]: foundry.utils.deepClone(data.look)} : deletionUpdate(path));
+  }
+
+  static async #onAddMapAbove() {
+    await addMapAbove(this.document, this.#label);
+  }
+
+  static async #onAddMapInside() {
+    await addMapInside(this.document, this.#label);
+  }
+
+  static async #onTravel(event, target) {
+    const uuid = target.dataset.uuid;
+    saveDriverChanges(this.document, {camera: await arrivalCamera(getHoloData(this.document), uuid), map: uuid});
+  }
+
+  static async #onGoHome() {
+    saveDriverChanges(this.document, {camera: await arrivalCamera(getHoloData(this.document), null), map: null});
   }
 
   static async #onCreateLink() {
@@ -228,12 +273,16 @@ export default class HoloConfig extends HandlebarsApplicationMixin(DocumentSheet
 
 /** Ways to open the settings: a button in the Tile HUD and in the Tile config header (GMs only). */
 export function registerConfigHooks() {
-  // Shared settings live in the link's journal; keep open windows of linked tiles current.
-  Hooks.on("updateJournalEntry", journal => {
+  // Shared settings live in link journals, which are also maps (shown, parents, children); keep open windows current.
+  const refresh = journal => {
+    if ( !journal.flags[MODULE_ID] ) return;
     for ( const app of foundry.applications.instances.values() ) {
-      if ( (app instanceof HoloConfig) && (getHoloData(app.document).link?.uuid === journal.uuid) ) app.render();
+      if ( app instanceof HoloConfig ) app.render();
     }
-  });
+  };
+  Hooks.on("createJournalEntry", refresh);
+  Hooks.on("updateJournalEntry", refresh);
+  Hooks.on("deleteJournalEntry", refresh);
   Hooks.on("renderTileHUD", (hud, html) => {
     if ( !game.user.isGM ) return;
     const root = (html instanceof HTMLElement) ? html : html[0];

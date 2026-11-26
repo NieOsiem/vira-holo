@@ -24,7 +24,8 @@
       },
       "undo": "Undo your last change to pins, drawings or measurements",
       "redo": "Redo",
-      "display": "Terrain display"
+      "display": "Terrain display",
+      "up": "Up a level: show the map this one is on"
     },
     "Config": {
       "Open": "Hologram",
@@ -35,6 +36,7 @@
         "look": "Look",
         "annotations": "Annotations",
         "link": "Link",
+        "maps": "Maps",
         "view": "View"
       },
       "Look": "Look",
@@ -154,6 +156,28 @@
       "Create": "New link from this hologram",
       "Hint": "A link lets several holograms share their content, waypoints, view or look, e.g. three map tables or thirty notice boards. Links are journal entries in the Holo Links folder.",
       "Missing": "This hologram's link (journal entry) no longer exists, so it shows its own settings."
+    },
+    "Maps": {
+      "NewName": "New map",
+      "Name": "Map shown",
+      "AwayHint": "The hologram travelled here from its own content. Content, scale, waypoints and drawings below belong to this map.",
+      "Parent": "Placed on",
+      "NoParent": "(nothing: top level)",
+      "ParentHint": "The map this one is part of. It shows up there as a portal: click it to go in, drag it (GM) to move it.",
+      "NotAMap": "This hologram shows its own content. Adding a map above or inside turns that content into a map (a link in the Holo Links folder).",
+      "Add": "New map",
+      "AddAbove": "Above this one",
+      "AddInside": "Inside this one",
+      "AddHint": "A new, empty map. Above: this map sits in its middle (and the new map takes this one's place on its old parent). Inside: placed in the middle of this map. Travel to it to set its image, then drag its portal into place.",
+      "Travel": "Travel",
+      "Up": "Up a level",
+      "Children": "Maps placed here",
+      "Home": "Home",
+      "GoHome": "Back to this hologram's own content",
+      "TravelHint": "Travelling changes the view for everyone watching this hologram, like moving its camera.",
+      "OwnLook": "Own look for this map",
+      "OwnLookHint": "Off: this map is shown with the hologram's look. On: changes below are saved with the map and shown on any hologram that travels here.",
+      "Circular": "A map can't be placed on itself or on a map inside it."
     },
     "StrokeLimit": "This hologram already has {max} drawings; clear some first.",
     "Units": {

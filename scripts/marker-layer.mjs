@@ -47,8 +47,16 @@ class MarkerSprite {
       else this.head.drawCircle(0, 0, radius * 0.85);
       if ( fill ) this.head.endFill();
     };
-    outline(radius * 0.9, 0.18); // glow
-    outline(Math.max(1, radius * 0.22), 1, selected ? 0.75 : 0.45);
+    if ( marker.glyph === "portal" ) {
+      // A map placed here: an open ring around a bright core.
+      this.head.lineStyle({width: radius * 0.9, color, alpha: 0.18}).drawCircle(0, 0, radius);
+      this.head.lineStyle({width: Math.max(1, radius * 0.2), color, alpha: 1}).drawCircle(0, 0, radius);
+      this.head.lineStyle(0).beginFill(color, selected ? 1 : 0.85).drawCircle(0, 0, radius * 0.42).endFill();
+    }
+    else {
+      outline(radius * 0.9, 0.18); // glow
+      outline(Math.max(1, radius * 0.22), 1, selected ? 0.75 : 0.45);
+    }
 
     const visible = showLabel && !!marker.label;
     this.label.visible = visible;

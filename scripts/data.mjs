@@ -22,6 +22,8 @@ export const DEFAULTS = Object.freeze({
    * radians per second, added to yaw from the shared server clock.
    */
   camera: {yaw: 0.6, pitch: 0.95, dist: 4.8, x: 0, z: 0, spin: 0.08},
+  // camera.map (the UUID of the map travelled to, see getMaps) is left out on purpose: resetting or recentring the
+  // camera must not take the hologram home.
   look: {
     color: "#ff9f43",
     tint: 0.75,
@@ -106,15 +108,72 @@ export function sectionOf(key) {
  */
 export function getLink(doc) {
   const ref = doc.flags?.[MODULE_ID]?.link;
-  if ( !ref?.uuid ) return null;
-  const journal = fromUuidSync(ref.uuid, {strict: false});
-  if ( !journal?.getFlag(MODULE_ID, "state") ) return null;
+  const journal = getStateJournal(ref?.uuid);
+  if ( !journal ) return null;
   return {journal, share: {...DEFAULT_SHARE, ...ref.share}};
 }
 
 /**
+ * A journal entry holding hologram state: a link, which is also a map that holograms can travel to.
+ * @param {string} uuid
+ * @returns {JournalEntry|null}
+ */
+export function getStateJournal(uuid) {
+  if ( !uuid || (typeof uuid !== "string") ) return null;
+  const journal = fromUuidSync(uuid, {strict: false});
+  if ( (journal?.documentName !== "JournalEntry") || !journal.getFlag(MODULE_ID, "state") ) return null;
+  return journal;
+}
+
+/**
+ * The maps a tile is on. Every link is a map, and maps form a tree through `state.parent` ({uuid, u, v}: the parent
+ * map and the spot on its image the map sits at). A tile is "home" on its own content: its link's map when it
+ * shares content, otherwise its own settings (no map). `camera.map` names the map it travelled to, so the map is
+ * part of the view and is shared and synced like the camera.
+ * @param {TileDocument} doc
+ * @param {object|null} [link]   getLink(doc), if already known
+ * @returns {{home: JournalEntry|null, away: JournalEntry|null}}   away: the map shown instead of home, if any
+ */
+export function getMaps(doc, link=getLink(doc)) {
+  const home = link?.share.content ? link.journal : null;
+  const camera = link?.share.view ? link.journal.getFlag(MODULE_ID, "state").camera : doc.flags?.[MODULE_ID]?.camera;
+  const target = getStateJournal(camera?.map);
+  return {home, away: (target && (target !== home)) ? target : null};
+}
+
+/** Maps placed on a map, as {uuid, id, name, u, v} (u/v: their spot on its image). */
+export function mapChildren(uuid) {
+  if ( !uuid ) return [];
+  return game.journal.filter(j => j.getFlag(MODULE_ID, "state")?.parent?.uuid === uuid).map(j => {
+    const {u, v} = j.getFlag(MODULE_ID, "state").parent;
+    return {uuid: j.uuid, id: j.id, name: j.name, u: Math.clamp(Number(u) || 0, 0, 1), v: Math.clamp(Number(v) || 0, 0, 1)};
+  });
+}
+
+/** What the hologram data says about the map shown: see getHoloData. */
+function mapInfo(journal, home) {
+  if ( !journal ) return {uuid: null, name: null, home: true, ownLook: false, parent: null, position: null, children: []};
+  const state = journal.getFlag(MODULE_ID, "state");
+  const parent = getStateJournal(state.parent?.uuid);
+  return {
+    uuid: journal.uuid,
+    name: journal.name,
+    home,
+    ownLook: !home && !!state.look,
+    parent: parent ? {uuid: parent.uuid, name: parent.name} : null,
+    position: parent ? {u: Math.clamp(Number(state.parent.u) || 0, 0, 1), v: Math.clamp(Number(state.parent.v) || 0, 0, 1)}
+      : null,
+    children: mapChildren(journal.uuid)
+  };
+}
+
+/**
  * The effective hologram state of a Tile document: defaults, then the mode's defaults, then the tile's flags, with
- * every section shared through a link taken from the link instead.
+ * every section shared through a link taken from the link instead. Away from home (see getMaps), content and
+ * annotations come from the map shown, and so does the look if that map has its own.
+ * `map` describes the map shown ({uuid, name, home, ownLook, parent: {uuid, name}, position: {u, v} on the parent,
+ * children}); its uuid is null for a tile at home on its own settings. `imageFromTile` is whether the image is the
+ * tile's own texture.
  * @param {TileDocument} doc
  * @returns {object}
  */
@@ -133,11 +192,22 @@ export function getHoloData(doc) {
       }
     }
   }
+  const {home, away} = getMaps(doc, link);
+  if ( away ) {
+    const state = away.getFlag(MODULE_ID, "state");
+    for ( const key of [...LINK_SECTIONS.content, ...LINK_SECTIONS.annotations] ) {
+      delete source[key];
+      if ( state[key] !== undefined ) source[key] = foundry.utils.deepClone(state[key]);
+    }
+    if ( state.look ) source.look = foundry.utils.deepClone(state.look);
+  }
   const data = foundry.utils.deepClone(DEFAULTS);
   foundry.utils.mergeObject(data, MODE_DEFAULTS[source.mode ?? data.mode] ?? {});
   foundry.utils.mergeObject(data, source);
   data.link = link ? {uuid: link.journal.uuid, name: link.journal.name, share: link.share} : null;
   data.linkMissing = !link && !!doc.flags?.[MODULE_ID]?.link?.uuid;
+  data.map = mapInfo(away ?? home, !away);
+  data.imageFromTile = !away && !home;
   return data;
 }
 

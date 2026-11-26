@@ -6,6 +6,7 @@ import {MAX_DIST, MAX_PITCH, MIN_DIST, MIN_PITCH} from "./holo-renderer.mjs";
 import {closeCard, isCardEvent, openCard, updateCard} from "./pin-card.mjs";
 import {closeMeasureCard, isMeasureCardEvent, openMeasureCard, updateMeasureCard} from "./measure-card.mjs";
 import {writeHolo} from "./links.mjs";
+import {arrivalCamera, moveMap} from "./maps.mjs";
 import {hideRing, isRingEvent, refreshRing, setGlyphEnabled, setGlyphOn, setStrip, showRing} from "./ring.mjs";
 import {simplifyStroke} from "./stroke-layer.mjs";
 import {getHolograms, showLiveCamera} from "./tile-holo.mjs";
@@ -94,6 +95,7 @@ function setEngaged(hit) {
   if ( !hit ) return hideRing();
   const {tile, holo} = hit;
   showRing(tile, {
+    up: () => travel(tile, holo, holo.data.map.parent?.uuid),
     recenter: () => recenter(tile, holo),
     spin: () => toggleSpin(tile, holo),
     display: () => cycleDisplay(tile, holo),
@@ -366,8 +368,14 @@ function onPointerUp(event) {
     return;
   }
   if ( label && !moved ) return openMeasure(tile, holo, label);
-  if ( pressed && !moved ) return openMarkerCard(tile, holo, pressed);
+  const portal = pressed && holo.markers.find(m => m.id === pressed)?.portal;
+  if ( pressed && !moved ) return portal ? travel(tile, holo, portal) : openMarkerCard(tile, holo, pressed);
   if ( marker ) {
+    if ( portal ) {
+      // The moved portal stays on show until the map's new spot is saved (see HoloRenderer#configure).
+      if ( position ) moveMap(portal, position);
+      return;
+    }
     if ( position ) {
       history.edit(tile.document, "markers", {type: "update", id: marker, changes: position},
         holo.annotation("markers", marker));
@@ -391,6 +399,20 @@ function onPointerUp(event) {
     toggleSpin(tile, holo);
   }
   else lastClick = {tile, time: now};
+}
+
+/**
+ * Show another map on the hologram: its parent, or a map placed on it. Everyone watching sees it, like the camera.
+ * @param {Tile} tile
+ * @param {HoloRenderer} holo
+ * @param {string} [uuid]
+ */
+async function travel(tile, holo, uuid) {
+  if ( !uuid ) return;
+  setTool(null, holo); // The ring is rebuilt for the new map
+  closeCards();
+  const camera = await arrivalCamera(holo.data, uuid);
+  saveDriverChanges(tile.document, {camera, map: uuid});
 }
 
 /** Drop a new waypoint where the click meets the hologram's surface, and open its card. */
