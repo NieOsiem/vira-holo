@@ -12,7 +12,7 @@ const GLYPHS = {
     + '<circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/>'
 };
 /** Angle between neighbouring glyphs along the projection's edge, in radians. */
-const ARC_STEP = 0.24;
+const ARC_STEP = 0.13;
 /** Glyphs sit on this fraction of the projection ellipse. */
 const ARC_RADIUS = 0.8;
 
@@ -147,7 +147,7 @@ export function refreshRing(tile) {
   const {look, camera} = getHoloData(tile.document);
   const {width, height, rotation} = tile.document;
   const {x: cx, y: cy} = tile.center;
-  const size = Math.clamp(Math.min(width, height) * 0.085, 28, 110);
+  const size = Math.clamp(Math.min(width, height) * 0.042, 14, 54);
   const turn = Math.toRadians(rotation);
   element.style.setProperty("--holo-color", look.color);
   element.style.setProperty("--glyph-size", `${size}px`);
