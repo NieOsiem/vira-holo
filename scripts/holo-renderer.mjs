@@ -44,6 +44,8 @@ const MEASURE_DASHES = 14;
 /** Approximate number of wireframe lines across the terrain in each direction. */
 const WIRE_LINES = 40;
 const CONTOUR_LEVELS = 12;
+/** Height (0-1) at which the heightmap counts as land: the coastline of an island, drawn in the wireframe styles. */
+const COAST_HEIGHT = 0.03;
 /**
  * View depth mapped to the far end of the depth buffer (the near end is the camera). Everything drawn is well within
  * it at any camera distance, so one fixed range serves every mesh, the projector disc's own camera included.
@@ -236,20 +238,22 @@ in float vShade;
 ${HOLO_LOOK}
 uniform float uContours;
 uniform float uOpaque;    // 1: an opaque surface (it also fills the depth buffer)
-uniform float uDepthOnly; // 1: only fill the depth buffer, so the wireframe behind hills is hidden
+uniform float uLinesOnly; // 1: a wireframe style, the surface only draws its lines (and fills the depth buffer if it is tested)
 out vec4 fragColor;
 
 void main() {
-  if ( uDepthOnly > 0.5 ) {
-    fragColor = vec4(0.0);
-    return;
-  }
   float depth = depthFade(vDepth, 0.6);
-  vec4 tex = texture(uImage, vUV);
   float level = vHeight * ${CONTOUR_LEVELS.toFixed(1)};
   float distToLevel = abs(fract(level + 0.5) - 0.5);
   float contour = (1.0 - smoothstep(0.0, 1.2 * fwidth(level), distToLevel)) * smoothstep(0.02, 0.05, vHeight);
   vec3 lines = uColor * contour * uContours * 0.9 * uFlicker * depth;
+  if ( uLinesOnly > 0.5 ) {
+    float coast = 1.0 - smoothstep(0.0, 1.5 * fwidth(vHeight), abs(vHeight - ${COAST_HEIGHT.toFixed(3)}));
+    lines = lines * 1.6 + uColor * coast * 1.1 * uOpacity * uFlicker * depth;
+    fragColor = vec4(lines, 0.3 * max(lines.r, max(lines.g, lines.b))) * volumeFade();
+    return;
+  }
+  vec4 tex = texture(uImage, vUV);
   if ( uOpaque > 0.5 ) {
     float a = tex.a * uOpacity * uFlicker;
     fragColor = vec4(holoTint(tex, vShade) * scanline() * depth * a + lines, a) * volumeFade();
@@ -843,7 +847,7 @@ export default class HoloRenderer {
       uCell: new Float32Array([(2 * hx) / (resolution - 1), (2 * hz) / (resolution - 1)])
     };
     const surfaceShader = new PIXI.Shader(terrain, this.#lookUniforms({...shape, uContours: 0, uOpaque: 0,
-      uDepthOnly: 0, uDepthBias: 0}));
+      uLinesOnly: 0, uDepthBias: 0}));
     const wireShader = new PIXI.Shader(wireProgram, {...this.#lookUniforms(shape), uWire: 0,
       uDepthBias: WIRE_DEPTH_BIAS});
     this.#terrain = {
@@ -963,11 +967,10 @@ export default class HoloRenderer {
     const depth = (display === "wire") || (display === "solid");
     if ( this.#terrain ) {
       const [surface, wire] = this.#terrain.meshes;
-      surface.visible &&= display !== "wireXray";
       surface.state = depth ? this.depthWriteState : this.state;
       wire.state = depth ? this.depthReadState : this.state;
       this.#terrain.surfaceShader.uniforms.uOpaque = (display === "solid") ? 1 : 0;
-      this.#terrain.surfaceShader.uniforms.uDepthOnly = (display === "wire") ? 1 : 0;
+      this.#terrain.surfaceShader.uniforms.uLinesOnly = display.startsWith("wire") ? 1 : 0;
     }
     const tested = depth ? this.depthReadState : this.state;
     this.moteMesh.state = tested;
