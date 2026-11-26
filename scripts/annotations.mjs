@@ -1,11 +1,12 @@
-import {MAX_MARKERS, MAX_STROKES, getHoloData, sanitizeMarker, sanitizeStroke} from "./data.mjs";
+import {MAX_MARKERS, MAX_MEASURES, MAX_STROKES, getHoloData, sanitizeMarker, sanitizeMeasure, sanitizeStroke} from "./data.mjs";
 import {storageOf, writeHolo} from "./links.mjs";
 import {requestAnnotationEdit} from "./socket.mjs";
 
 /** The editable annotation lists, with their size limit and the check every item goes through. */
 const LISTS = {
   markers: {max: MAX_MARKERS, sanitize: sanitizeMarker},
-  strokes: {max: MAX_STROKES, sanitize: sanitizeStroke}
+  strokes: {max: MAX_STROKES, sanitize: sanitizeStroke},
+  measures: {max: MAX_MEASURES, sanitize: sanitizeMeasure}
 };
 
 /**
@@ -20,10 +21,11 @@ const queues = new Map();
  */
 
 /**
- * Add, change or remove waypoints ("markers") or strokes. GMs apply the edit themselves; drivers ask the active GM.
- * Edits are operations rather than whole lists, so two people editing at once don't overwrite each other.
+ * Add, change or remove waypoints ("markers"), strokes or measurements ("measures"). GMs apply the edit themselves;
+ * drivers ask the active GM. Edits are operations rather than whole lists, so two people editing at once don't
+ * overwrite each other.
  * @param {TileDocument} doc
- * @param {"markers"|"strokes"} list
+ * @param {"markers"|"strokes"|"measures"} list
  * @param {AnnotationEdit} edit
  */
 export function editAnnotations(doc, list, edit) {

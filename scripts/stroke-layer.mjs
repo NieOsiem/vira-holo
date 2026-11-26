@@ -1,7 +1,10 @@
 import {STROKE_WIDTHS} from "./data.mjs";
 
-/** Floats per vertex: position (3), previous point (3), next point (3), side (1), colour (3), width (1). */
-const STRIDE = 14;
+/**
+ * Floats per vertex: position (3), previous point (3), next point (3), side (1), colour (3), width (1), distance
+ * along the line (1).
+ */
+const STRIDE = 15;
 /** The glow pass is this much wider than the line. */
 const GLOW_SCALE = 2.6;
 /** Most points a single stroke segment is split into to follow the terrain. */
@@ -22,8 +25,10 @@ export default class StrokeLayer {
    * @param {PIXI.Program} program
    * @param {object} uniforms     Camera and projection-area uniforms shared with the rest of the hologram
    * @param {PIXI.State} state
+   * @param {object} [options]
+   * @param {number} [options.dash=0]   Dashes per object-space unit along each line; 0 draws solid lines
    */
-  constructor(program, uniforms, state) {
+  constructor(program, uniforms, state, {dash=0}={}) {
     this.vertices = new PIXI.Buffer(new Float32Array(STRIDE), false);
     this.indices = new PIXI.Buffer(new Uint32Array(3), false, true);
     const bytes = STRIDE * 4;
@@ -35,8 +40,10 @@ export default class StrokeLayer {
       .addAttribute("aSide", this.vertices, 1, false, FLOAT, bytes, 36)
       .addAttribute("aColor", this.vertices, 3, false, FLOAT, bytes, 40)
       .addAttribute("aWidth", this.vertices, 1, false, FLOAT, bytes, 52)
+      .addAttribute("aDistance", this.vertices, 1, false, FLOAT, bytes, 56)
       .addIndex(this.indices);
-    const pass = extra => new PIXI.Shader(program, {...uniforms, uOpacity: 1, uFlicker: 1, uWidth: 1, ...extra});
+    const pass = extra => new PIXI.Shader(program, {...uniforms, uOpacity: 1, uFlicker: 1, uWidth: 1, uDash: dash,
+      uDashPhase: 0, ...extra});
     this.shaders = [pass({uWidthScale: GLOW_SCALE, uAlpha: 0.4, uSoft: 1}), pass({uWidthScale: 1, uAlpha: 1, uSoft: 0})];
     this.container.addChild(...this.shaders.map(shader => new PIXI.Mesh(this.geometry, shader, state)));
     this.container.visible = false;
@@ -73,13 +80,15 @@ export default class StrokeLayer {
     for ( const {positions, color, width} of lines ) {
       const count = positions.length;
       const first = vertex;
+      let distance = 0;
       for ( let i = 0; i < count; i++ ) {
         const here = positions[i];
         const prev = positions[Math.max(i - 1, 0)];
         const next = positions[Math.min(i + 1, count - 1)];
+        distance += Math.hypot(here.x - prev.x, here.y - prev.y, here.z - prev.z);
         for ( const side of [-1, 1] ) {
-          vertices.set([here.x, here.y, here.z, prev.x, prev.y, prev.z, next.x, next.y, next.z, side, ...color, width],
-            vertex * STRIDE);
+          vertices.set([here.x, here.y, here.z, prev.x, prev.y, prev.z, next.x, next.y, next.z, side, ...color, width,
+            distance], vertex * STRIDE);
           vertex++;
         }
       }
@@ -93,12 +102,16 @@ export default class StrokeLayer {
     this.indices.update(indices);
   }
 
-  /** Per-frame look: opacity, flicker and the half width of a medium stroke in render-texture pixels. */
-  update({opacity, flicker, width}) {
+  /**
+   * Per-frame look: opacity, flicker, the half width of a medium stroke in render-texture pixels and how far dashes
+   * have marched (0..1).
+   */
+  update({opacity, flicker, width, dashPhase=0}) {
     for ( const {uniforms} of this.shaders ) {
       uniforms.uOpacity = opacity;
       uniforms.uFlicker = flicker;
       uniforms.uWidth = width;
+      uniforms.uDashPhase = dashPhase;
     }
   }
 

@@ -23,6 +23,26 @@
     {{/unless}}
   </fieldset>
 
+  {{#unless isText}}
+  <fieldset>
+    <legend>{{localize "VIRAHOLO.Config.scale.legend"}}</legend>
+    <div class="form-group">
+      <label for="{{partId}}-scale">{{localize "VIRAHOLO.Config.scale.covers"}}</label>
+      <div class="form-fields">
+        <input type="number" id="{{partId}}-scale" name="{{flags}}.scale.distance" value="{{holo.scale.distance}}" min="0" step="any">
+        <select name="{{flags}}.scale.unit" aria-label="{{localize "VIRAHOLO.Config.scale.unit"}}">{{selectOptions units selected=holo.scale.unit}}</select>
+      </div>
+    </div>
+    <div class="form-group">
+      <label for="{{partId}}-axis">{{localize "VIRAHOLO.Config.scale.across"}}</label>
+      <div class="form-fields">
+        <select id="{{partId}}-axis" name="{{flags}}.scale.axis">{{selectOptions axes selected=holo.scale.axis}}</select>
+      </div>
+      <p class="hint">{{localize "VIRAHOLO.Config.scale.hint"}}</p>
+    </div>
+  </fieldset>
+  {{/unless}}
+
   {{#if isTerrain}}
   <fieldset>
     <legend>{{localize "VIRAHOLO.Mode.terrain"}}</legend>

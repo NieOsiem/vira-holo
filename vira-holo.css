@@ -70,6 +70,13 @@
   box-shadow: 0 0 calc(var(--glyph-size) * 0.2) var(--holo-color);
 }
 
+/* Second mode of a two-mode tool: two dots. */
+#hud .vira-holo-ring > button.on.tier-2::after {
+  margin-left: -15%;
+  box-shadow: calc(var(--glyph-size) * 0.18) 0 0 color-mix(in srgb, var(--holo-color) 55%, white),
+    0 0 calc(var(--glyph-size) * 0.2) var(--holo-color);
+}
+
 @keyframes vira-holo-glyph-in {
   from { opacity: 0; transform: scale(0.5); }
   to { opacity: 1; transform: scale(1); }
@@ -368,3 +375,60 @@
   from { opacity: 0; transform: translate(-50%, 20%); }
   to { opacity: 1; transform: translateX(-50%); }
 }
+
+/* ---- Measurement card: length, delete, and (GM) set the scale from this line ---- */
+.vira-holo-measure-card {
+  width: 230px;
+}
+.vira-holo-measure-card .distance {
+  position: relative;
+  margin-bottom: 8px;
+  color: #ffe9b0;
+  font-size: 16px;
+  font-weight: bold;
+  letter-spacing: 1px;
+  text-align: center;
+  text-shadow: 0 0 8px rgb(255 224 102 / 0.45);
+}
+.vira-holo-measure-card form.calibrate {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-bottom: 7px;
+}
+.vira-holo-measure-card form.calibrate label {
+  font-size: 9px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.vira-holo-card.vira-holo-measure-card input.value,
+.vira-holo-card.vira-holo-measure-card select.unit {
+  all: unset;
+  box-sizing: border-box;
+  height: 22px;
+  padding: 2px 5px;
+  cursor: text;
+  background: rgb(8 5 2 / 0.6);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  border-radius: 3px;
+  color: #fff3d6;
+  font: inherit;
+}
+.vira-holo-card.vira-holo-measure-card input.value { width: 0; flex: 1; }
+.vira-holo-card.vira-holo-measure-card select.unit { cursor: pointer; }
+.vira-holo-card.vira-holo-measure-card select.unit option { background: #1a1008; }
+.vira-holo-card.vira-holo-measure-card input.value:focus { border-color: var(--accent); }
+.vira-holo-measure-card form.calibrate button.set {
+  padding: 4px 6px;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  border-radius: 3px;
+  color: #ffd9a0;
+  font-size: 9px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.vira-holo-measure-card form.calibrate button.set:hover { color: #fff; border-color: var(--accent); }

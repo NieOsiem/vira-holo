@@ -27,5 +27,15 @@
       </div>
       <p class="hint">{{localize "VIRAHOLO.Config.strokesHint"}}</p>
     </div>
+    <div class="form-group">
+      <label>{{localize "VIRAHOLO.Config.measureCount"}}</label>
+      <div class="form-fields">
+        <span class="vira-holo-count">{{measureCount}}</span>
+        <button type="button" data-action="clearMeasures" {{disabled (not measureCount)}}>
+          <i class="fa-solid fa-trash" inert></i> {{localize "VIRAHOLO.Config.clearMeasures"}}
+        </button>
+      </div>
+      <p class="hint">{{localize "VIRAHOLO.Config.measuresHint"}}</p>
+    </div>
   </fieldset>
 </section>

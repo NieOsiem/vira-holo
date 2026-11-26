@@ -53,8 +53,15 @@ export const DEFAULTS = Object.freeze({
      * Freehand ink: {id, color, width, points}. points is a flat [u, v, u, v, ...] list on the image (like
      * waypoints), so strokes stay on the surface as it turns and follow the terrain; width is a tier from 1 to 3.
      */
-    strokes: []
+    strokes: [],
+    /** Measurements: {id, points: [ua, va, ub, vb]}, two points on the image like waypoints. */
+    measures: []
   },
+  /**
+   * Real-world size of the image: it covers `distance` units across its width or height ("axis"). A distance of 0
+   * means no scale is set, and measurements can't show a length.
+   */
+  scale: {distance: 0, unit: "km", axis: "width"},
   text: {
     content: "",
     /** Empty uses the world's default font. */
@@ -75,7 +82,7 @@ const MODE_DEFAULTS = Object.freeze({
  * Never shared: enabled, interactive, owners and the tile's placement.
  */
 export const LINK_SECTIONS = Object.freeze({
-  content: ["mode", "image", "terrain", "text"],
+  content: ["mode", "image", "terrain", "text", "scale"],
   annotations: ["annotations"],
   view: ["camera"],
   look: ["look"]
@@ -173,6 +180,36 @@ export const MAX_STROKES = 100;
 export const MAX_STROKE_POINTS = 400;
 /** Stroke width tiers: tier → line width relative to a medium stroke. */
 export const STROKE_WIDTHS = Object.freeze({1: 0.5, 2: 1, 3: 1.8});
+export const MAX_MEASURES = 50;
+/** Ink of measurements, as in the mockup. */
+export const MEASURE_INK = "#ffe066";
+
+/** Length units for a map's scale, in metres, by measuring system. */
+export const UNITS = Object.freeze({
+  m: {metres: 1, system: "metric"},
+  km: {metres: 1000, system: "metric"},
+  ft: {metres: 0.3048, system: "imperial"},
+  mi: {metres: 1609.344, system: "imperial"}
+});
+
+/**
+ * A length for display, in the scale's measuring system: metres up to a kilometre, then kilometres; feet up to a
+ * mile, then miles.
+ * @param {number} metres
+ * @param {string} unit   The scale's unit, which picks the system
+ * @returns {string}
+ */
+export function formatDistance(metres, unit) {
+  const imperial = UNITS[unit]?.system === "imperial";
+  const [small, large] = imperial ? ["ft", "mi"] : ["m", "km"];
+  const value = metres / UNITS[small].metres;
+  const threshold = UNITS[large].metres / UNITS[small].metres;
+  const label = key => game.i18n.localize(`VIRAHOLO.Units.${key}`);
+  const round = v => v.toLocaleString(game.i18n.lang, {maximumFractionDigits: (v < 10) ? 1 : 0});
+  if ( value < threshold ) return `${round(value)} ${label(small)}`;
+  const big = metres / UNITS[large].metres;
+  return `${big.toLocaleString(game.i18n.lang, {maximumFractionDigits: (big < 100) ? 2 : 0})} ${label(large)}`;
+}
 
 /**
  * The ink that stands out most against a hologram colour (largest hue difference), for new waypoints.
@@ -232,4 +269,27 @@ export function sanitizeStroke(stroke) {
     width: (width in STROKE_WIDTHS) ? Number(width) : 2,
     points: points.slice(0, count * 2).map(p => Math.round(Math.clamp(p, 0, 1) * 10000) / 10000)
   };
+}
+
+/**
+ * A measurement with its two points checked and rounded like a stroke's.
+ * @param {object} measure
+ * @returns {object|null}
+ */
+export function sanitizeMeasure(measure) {
+  const {id, points} = measure ?? {};
+  if ( (typeof id !== "string") || !/^[a-zA-Z0-9]{16}$/.test(id) || !Array.isArray(points) ) return null;
+  if ( (points.length !== 4) || !points.every(Number.isFinite) ) return null;
+  return {id, points: points.map(p => Math.round(Math.clamp(p, 0, 1) * 10000) / 10000)};
+}
+
+/**
+ * A scale with every field checked, for the calibration that arrives from a measurement's card.
+ * @param {object} scale
+ * @returns {object|null}
+ */
+export function sanitizeScale(scale) {
+  const {distance, unit, axis} = scale ?? {};
+  if ( !Number.isFinite(distance) || (distance < 0) || !(unit in UNITS) ) return null;
+  return {distance, unit, axis: (axis === "height") ? "height" : "width"};
 }

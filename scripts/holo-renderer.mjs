@@ -1,5 +1,6 @@
-import {getHoloData} from "./data.mjs";
+import {MEASURE_INK, UNITS, formatDistance, getHoloData} from "./data.mjs";
 import MarkerLayer from "./marker-layer.mjs";
+import MeasureLayer from "./measure-layer.mjs";
 import StrokeLayer from "./stroke-layer.mjs";
 import TextPanel from "./text-panel.mjs";
 
@@ -20,8 +21,10 @@ const SCANLINE_SPACING = 6;
 const STEM_HEIGHT = 0.16;
 /** Longest side of the CPU copy of a heightmap, used to stand waypoints on the terrain and to pick points on it. */
 const HEIGHT_SAMPLES = 512;
-/** How long a stroke sent to the GM keeps showing while its save is on the way. */
-const PENDING_STROKE_MS = 3000;
+/** How long a new or erased stroke or measurement shows that way here while the GM saves it. */
+const PENDING_MS = 3000;
+/** Dashes per footprint unit along a measurement line. */
+const MEASURE_DASHES = 14;
 /** Approximate number of wireframe lines across the terrain in each direction. */
 const WIRE_LINES = 40;
 const CONTOUR_LEVELS = 12;
@@ -221,6 +224,7 @@ attribute vec3 aNext;
 attribute float aSide;
 attribute vec3 aColor;
 attribute float aWidth;
+attribute float aDistance;
 ${CAMERA_UNIFORMS}
 uniform float uWidth; // half width in render-texture pixels of a medium stroke
 uniform float uWidthScale;
@@ -228,6 +232,7 @@ varying vec3 vColor;
 varying float vEdge;
 varying float vHalf;
 varying float vDepth;
+varying float vDistance;
 ${PROJECT}
 vec2 pixels(vec3 v) {
   return v.xy * ${FOCAL.toFixed(2)} * uCamera.w / (v.z + uCamera.z);
@@ -250,6 +255,7 @@ void main() {
   vEdge = aSide * extent;
   vHalf = halfWidth;
   vColor = aColor;
+  vDistance = aDistance;
   vDepth = v.z;
   float w = v.z + uCamera.z;
   gl_Position = clipFrom((here + miter * aSide * extent * stretch) * w, w);
@@ -261,17 +267,21 @@ varying vec3 vColor;
 varying float vEdge;
 varying float vHalf;
 varying float vDepth;
+varying float vDistance;
 uniform float uOpacity;
 uniform float uFlicker;
 uniform float uAlpha;
 uniform float uSoft; // 1 for the glow pass: fades out across the whole width
+uniform float uDash; // dashes per object-space unit along the line; 0 for a solid line
+uniform float uDashPhase;
 ${VOLUME}
 void main() {
   float d = abs(vEdge);
   float hard = clamp(vHalf + 0.5 - d, 0.0, 1.0);
   float soft = 1.0 - smoothstep(0.0, vHalf + 1.0, d);
   float depth = mix(1.0, 0.6, clamp((vDepth + 1.0) * 0.5, 0.0, 1.0));
-  float a = mix(hard, soft * soft, uSoft) * uAlpha * uOpacity * uFlicker * depth * volumeFade();
+  float dash = uDash > 0.0 ? 1.0 - smoothstep(0.55, 0.62, fract(vDistance * uDash - uDashPhase)) : 1.0;
+  float a = mix(hard, soft * soft, uSoft) * dash * uAlpha * uOpacity * uFlicker * depth * volumeFade();
   // A hot, whiter core; the glow keeps the ink's own colour.
   vec3 color = mix(vColor, vec3(1.0), 0.3 * (1.0 - uSoft));
   gl_FragColor = vec4(color * a, a * 0.85);
@@ -427,6 +437,9 @@ export default class HoloRenderer {
       uVolume: this.volumeUniform};
     this.strokeLayer = new StrokeLayer(stroke, strokeUniforms, this.state);
     this.liveStrokeLayer = new StrokeLayer(stroke, strokeUniforms, this.state);
+    this.measureLines = new StrokeLayer(stroke, strokeUniforms, this.state, {dash: MEASURE_DASHES});
+    this.liveMeasureLines = new StrokeLayer(stroke, strokeUniforms, this.state, {dash: MEASURE_DASHES});
+    this.measureLabels = new MeasureLayer();
     this.stage.addChild(this.discMesh, this.panelMesh);
     this.#addOverlays();
     this.configure();
@@ -460,16 +473,24 @@ export default class HoloRenderer {
   /** The stroke this client is drawing right now. */
   #liveStroke = null;
   #liveStrokeVersion = 0;
-  /** @type {Map<string, {stroke: object, until: number}>} Strokes sent to the GM, shown until their save arrives. */
-  #pendingStrokes = new Map();
-  /** @type {Map<string, number>} Strokes erased on this client, hidden until their deletion is saved (or times out). */
-  #erasedStrokes = new Map();
+  /** The measurement this client is making right now: {points}. */
+  #liveMeasure = null;
+  #liveMeasureVersion = 0;
+  /** Measurement whose card is open on this client. */
+  selectedMeasure = null;
+  /** @type {Map<string, number[]>} Unsaved points of measurements whose ends are being moved. */
+  #liveMeasurePoints = new Map();
+  /** @type {Record<string, Map<string, {item: object, until: number}>>} Items sent to the GM, shown until saved. */
+  #pending = {strokes: new Map(), measures: new Map()};
+  /** @type {Record<string, Map<string, number>>} Items erased on this client, hidden until the deletion is saved. */
+  #erased = {strokes: new Map(), measures: new Map()};
   /** Half width of a medium stroke, in render-texture pixels. */
   #strokeHalfWidth = 1;
 
-  /** Strokes and waypoints go on top of the content, waypoints last. */
+  /** Strokes, measurements and waypoints go on top of the content, waypoints last. */
   #addOverlays() {
-    this.stage.addChild(this.strokeLayer.container, this.liveStrokeLayer.container, this.markerLayer.container);
+    this.stage.addChild(this.strokeLayer.container, this.liveStrokeLayer.container, this.measureLines.container,
+      this.liveMeasureLines.container, this.measureLabels.container, this.markerLayer.container);
   }
 
   #lookUniforms(extra={}) {
@@ -489,6 +510,7 @@ export default class HoloRenderer {
     if ( !this.#dragging ) {
       this.#liveCamera = null;
       this.#liveMarkers.clear();
+      this.#liveMeasurePoints.clear();
     }
     this.color.set(new PIXI.Color(data.look.color).toRgbArray());
     this.resize();
@@ -697,7 +719,7 @@ export default class HoloRenderer {
     disc.uOpacity = look.opacity;
     disc.uFlicker = this.#flicker;
     disc.uDashPhase = (seconds * 0.5) % 1;
-    this.#layoutStrokes(showTerrain);
+    this.#layoutLines(showTerrain);
     this.#layoutMarkers(pitch);
   }
 
@@ -767,69 +789,205 @@ export default class HoloRenderer {
     this.#liveStrokeVersion++;
   }
 
-  /** Keep showing a finished stroke until the GM's save brings it back (or it never does). */
-  addPendingStroke(stroke) {
-    this.#pendingStrokes.set(stroke.id, {stroke, until: performance.now() + PENDING_STROKE_MS});
-  }
-
-  /** Hide a stroke right away while its deletion is on the way to the GM. */
-  hideStroke(id) {
-    this.#erasedStrokes.set(id, performance.now() + PENDING_STROKE_MS);
+  /**
+   * Show the measurement being made on this client (call again after moving its end), or stop showing it.
+   * @param {{points: number[]}|null} measure
+   */
+  setLiveMeasure(measure) {
+    this.#liveMeasure = measure;
+    this.#liveMeasureVersion++;
   }
 
   /**
-   * Shown strokes passing within `radius` of the segment a→b (render-texture pixels), e.g. an eraser's sweep.
+   * Show a measurement with moved ends until the save arrives, or stop showing it that way.
+   * @param {string} id
+   * @param {number[]|null} points
+   */
+  setLiveMeasurePoints(id, points) {
+    if ( points ) this.#liveMeasurePoints.set(id, points);
+    else this.#liveMeasurePoints.delete(id);
+  }
+
+  /**
+   * Keep showing a new stroke or measurement until the GM's save brings it back (or it never does).
+   * @param {"strokes"|"measures"} list
+   * @param {object} item
+   */
+  addPending(list, item) {
+    this.#pending[list].set(item.id, {item, until: performance.now() + PENDING_MS});
+  }
+
+  /**
+   * Hide a stroke or measurement right away while its deletion is on the way to the GM.
+   * @param {"strokes"|"measures"} list
+   * @param {string} id
+   */
+  hide(list, id) {
+    this.#erased[list].set(id, performance.now() + PENDING_MS);
+  }
+
+  /**
+   * Saved items of a list plus this client's pending ones, minus the ones it erased. Forgets pending and erased
+   * entries once the saved data has caught up with them or they time out.
+   * @param {"strokes"|"measures"} list
+   */
+  #shown(list) {
+    const saved = this.data.annotations[list];
+    const pending = this.#pending[list];
+    const erased = this.#erased[list];
+    const now = performance.now();
+    const ids = new Set(saved.map(s => s.id));
+    for ( const [id, {until}] of pending ) {
+      if ( ids.has(id) || (now > until) ) pending.delete(id);
+    }
+    for ( const [id, until] of erased ) {
+      if ( (!ids.has(id) && !pending.has(id)) || (now > until) ) erased.delete(id);
+    }
+    return [...saved, ...Array.from(pending.values(), p => p.item)].filter(s => !erased.has(s.id));
+  }
+
+  /**
+   * Shown strokes and measurements whose line passes within `radius` of the segment a→b (render-texture pixels),
+   * e.g. an eraser's sweep.
    * @param {{x: number, y: number}} a
    * @param {{x: number, y: number}} b
    * @param {number} radius
-   * @returns {string[]}   Stroke IDs
+   * @returns {{list: string, id: string}[]}
    */
-  strokesAlong(a, b, radius) {
+  annotationsAlong(a, b, radius) {
     const project = this.#projector();
     const found = [];
-    for ( const {id, width, positions} of this.strokeLayer.lines ) {
-      if ( this.#erasedStrokes.has(id) ) continue;
-      const reach = radius + (this.#strokeHalfWidth * width);
-      let previous = null;
-      for ( const position of positions ) {
-        const point = project(position);
-        if ( point && previous && (this.#volumeAlpha(point) > 0.05)
-          && (segmentDistance(a, b, previous, point) <= reach) ) {
-          found.push(id);
-          break;
+    for ( const [list, layer] of [["strokes", this.strokeLayer], ["measures", this.measureLines]] ) {
+      for ( const {id, width, positions} of layer.lines ) {
+        if ( this.#erased[list].has(id) ) continue;
+        const reach = radius + (this.#strokeHalfWidth * width);
+        let previous = null;
+        for ( const position of positions ) {
+          const point = project(position);
+          if ( point && previous && (this.#volumeAlpha(point) > 0.05)
+            && (segmentDistance(a, b, previous, point) <= reach) ) {
+            found.push({list, id});
+            break;
+          }
+          previous = point;
         }
-        previous = point;
       }
     }
     return found;
   }
 
-  /** Saved strokes plus this client's pending ones, rebuilt into meshes only when they or the surface change. */
-  #layoutStrokes(showTerrain) {
-    const {look, terrain, annotations: {strokes: saved}} = this.data;
-    const now = performance.now();
-    const ids = new Set(saved.map(s => s.id));
-    for ( const [id, {until}] of this.#pendingStrokes ) {
-      if ( ids.has(id) || (now > until) ) this.#pendingStrokes.delete(id);
-    }
-    for ( const [id, until] of this.#erasedStrokes ) {
-      if ( (!ids.has(id) && !this.#pendingStrokes.has(id)) || (now > until) ) this.#erasedStrokes.delete(id);
-    }
-    const strokes = [...saved, ...Array.from(this.#pendingStrokes.values(), p => p.stroke)]
-      .filter(s => !this.#erasedStrokes.has(s.id));
+  /** Strokes and measurement lines, rebuilt into meshes only when they or the surface change. */
+  #layoutLines(showTerrain) {
+    const {look, terrain} = this.data;
     // On terrain, segments are split per grid cell so lines follow the relief.
     const onTerrain = showTerrain && !!this.#heights;
     const step = onTerrain ? 1 / (Math.clamp(Math.round(terrain.resolution), 16, 256) - 1) : 0;
     const shape = [this.#hx, this.#hz, look.lift, onTerrain ? terrain.relief : 0, step].join();
     const surface = (u, v) => this.#surfacePosition(u, v);
-    this.strokeLayer.sync(strokes, `${shape}|${strokes.map(s => s.id).join()}`, surface, step);
-    const live = this.#liveStroke ? [this.#liveStroke] : [];
-    this.liveStrokeLayer.sync(live, `${shape}|${this.#liveStrokeVersion}`, surface, step);
+    const key = items => `${shape}|${items.map(s => s.id).join()}`;
+    const asLine = ({id, points}) => ({id, points, color: MEASURE_INK, width: 1});
+
+    const strokes = this.#shown("strokes");
+    this.strokeLayer.sync(strokes, key(strokes), surface, step);
+    const liveStroke = this.#liveStroke ? [this.#liveStroke] : [];
+    this.liveStrokeLayer.sync(liveStroke, `${shape}|${this.#liveStrokeVersion}`, surface, step);
+    // Measurements are straight lines between their two surface points, through hills rather than over them.
+    const live = this.#liveMeasurePoints;
+    const measures = this.#shown("measures").map(m => (live.has(m.id) ? {...m, points: live.get(m.id)} : m));
+    const moved = Array.from(live, ([id, points]) => `${id}:${points.join()}`).join();
+    this.measureLines.sync(measures.map(asLine), `${key(measures)}|${moved}`, surface, 0);
+    const liveMeasure = this.#liveMeasure ? [asLine({id: "live", ...this.#liveMeasure})] : [];
+    this.liveMeasureLines.sync(liveMeasure, `${shape}|${this.#liveMeasureVersion}`, surface, 0);
+
     const rt = this.renderTexture;
     this.#strokeHalfWidth = Math.clamp(Math.min(rt.width, rt.height) * 0.0022, 1, 5);
-    const style = {opacity: look.opacity, flicker: this.#flicker, width: this.#strokeHalfWidth};
-    this.strokeLayer.update(style);
-    this.liveStrokeLayer.update(style);
+    const style = {
+      opacity: look.opacity, flicker: this.#flicker, width: this.#strokeHalfWidth,
+      dashPhase: ((game.time.serverTime / 1000) * 1.5) % 1
+    };
+    for ( const layer of [this.strokeLayer, this.liveStrokeLayer, this.measureLines, this.liveMeasureLines] ) {
+      layer.update(style);
+    }
+    this.#layoutMeasureLabels(measures);
+  }
+
+  /** Endpoint dots and distance labels, placed with the camera as drawn this frame. */
+  #layoutMeasureLabels(measures) {
+    const rt = this.renderTexture;
+    const size = Math.clamp(Math.min(rt.width, rt.height) * 0.016, 6, 24);
+    const all = this.#liveMeasure ? [...measures, {id: "live", ...this.#liveMeasure}] : measures;
+    const labels = all.map(({id, points}) => ({id, text: this.#distanceLabel(points)}));
+    const sprites = this.measureLabels.sync(labels, size, this.selectedMeasure);
+    const project = this.#projector();
+    for ( const {id, points: [ua, va, ub, vb]} of all ) {
+      const sprite = sprites.get(id);
+      const from = this.#surfacePosition(ua, va);
+      const to = this.#surfacePosition(ub, vb);
+      const a = project(from);
+      const b = project(to);
+      const middle = project({x: (from.x + to.x) / 2, y: (from.y + to.y) / 2, z: (from.z + to.z) / 2});
+      if ( !a || !b || !middle ) {
+        sprite.container.visible = false;
+        continue;
+      }
+      const alpha = this.data.look.opacity * this.#flicker * this.#volumeAlpha(middle) * depthFade(middle.depth);
+      sprite.place(a, b, middle, alpha);
+    }
+  }
+
+  #distanceLabel(points) {
+    const metres = this.measureLength(points);
+    if ( metres === null ) return game.i18n.localize("VIRAHOLO.Measure.NoScale");
+    return formatDistance(metres, this.data.scale.unit);
+  }
+
+  /**
+   * Distance between two image points in metres, from the hologram's scale; null without one. Measured across the
+   * map (as on a paper map), not along the terrain's slopes.
+   * @param {number[]} points   [ua, va, ub, vb]
+   * @returns {number|null}
+   */
+  measureLength([ua, va, ub, vb]) {
+    const {distance, unit, axis} = this.data.scale;
+    if ( !(distance > 0) || !UNITS[unit] ) return null;
+    const metresPerUnit = (distance * UNITS[unit].metres) / ((axis === "height") ? 2 * this.#hz : 2 * this.#hx);
+    return metresPerUnit * Math.hypot((ub - ua) * 2 * this.#hx, (vb - va) * 2 * this.#hz);
+  }
+
+  /**
+   * The scale that makes a measurement the given length, keeping the current axis.
+   * @param {number[]} points
+   * @param {number} distance
+   * @param {string} unit
+   * @returns {object|null}   Null for a measurement of no length
+   */
+  scaleFrom([ua, va, ub, vb], distance, unit) {
+    const length = Math.hypot((ub - ua) * 2 * this.#hx, (vb - va) * 2 * this.#hz);
+    if ( !(length > 0) || !(distance > 0) ) return null;
+    const axis = this.data.scale.axis;
+    const extent = (axis === "height") ? 2 * this.#hz : 2 * this.#hx;
+    return {distance: Math.round((distance * extent / length) * 1000) / 1000, unit, axis};
+  }
+
+  /** The measurement whose label is under a render-texture point, if any. */
+  measureAt(point) {
+    const id = this.measureLabels.hitTest(point.x, point.y);
+    return (id === "live") ? null : id;
+  }
+
+  /**
+   * The measurement end nearest a render-texture point, within reach of its dot.
+   * @returns {{id: string, end: 0|1}|null}
+   */
+  measureEndAt(point) {
+    const hit = this.measureLabels.endAt(point.x, point.y);
+    return (hit?.id === "live") ? null : hit;
+  }
+
+  /** Where a measurement's label is drawn (its top centre), in render-texture pixels. */
+  measureTip(id) {
+    const bounds = this.measureLabels.get(id)?.bounds;
+    return bounds ? {x: bounds.x + (bounds.width / 2), y: bounds.y} : null;
   }
 
   /** Object-space position of an image point on the hologram's surface. */
@@ -1017,6 +1175,9 @@ export default class HoloRenderer {
     this.markerLayer.destroy();
     this.strokeLayer.destroy();
     this.liveStrokeLayer.destroy();
+    this.measureLines.destroy();
+    this.liveMeasureLines.destroy();
+    this.measureLabels.destroy();
     this.stage.destroy({children: true});
     destroyGeometries(this.discGeometry, this.panelGeometry);
     this.renderTexture.destroy(true);

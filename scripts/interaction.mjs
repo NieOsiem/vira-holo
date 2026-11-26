@@ -1,8 +1,11 @@
-import {DEFAULTS, MARKER_GLYPHS, MAX_STROKES, MAX_STROKE_POINTS, canDrive, contrastingInk, defaultCamera} from "./data.mjs";
+import {DEFAULTS, MARKER_GLYPHS, MAX_MEASURES, MAX_STROKES, MAX_STROKE_POINTS, canDrive, contrastingInk, defaultCamera,
+  sanitizeScale} from "./data.mjs";
 import {editAnnotations} from "./annotations.mjs";
 import HoloConfig from "./holo-config.mjs";
 import {MAX_DIST, MAX_PITCH, MIN_DIST, MIN_PITCH} from "./holo-renderer.mjs";
 import {closeCard, isCardEvent, openCard, updateCard} from "./pin-card.mjs";
+import {closeMeasureCard, isMeasureCardEvent, openMeasureCard, updateMeasureCard} from "./measure-card.mjs";
+import {writeHolo} from "./links.mjs";
 import {hideRing, isRingEvent, refreshRing, setGlyphOn, setStrip, showRing} from "./ring.mjs";
 import {simplifyStroke} from "./stroke-layer.mjs";
 import {getHolograms, showLiveCamera} from "./tile-holo.mjs";
@@ -26,7 +29,9 @@ const STROKE_TOLERANCE = 0.001;
 
 /**
  * @type {{tile: Tile, holo: HoloRenderer, pointerId: number, pan: boolean, pressed: string|null,
- *         marker: string|null, toolOn: boolean, pen: boolean, stroke: object|null,
+ *         marker: string|null, label: string|null, toolOn: boolean, pen: boolean, stroke: object|null,
+ *         measure: {a: object, b: object, second: boolean}|null,
+ *         measureEnd: {id: string, end: number, points: number[]}|null,
  *         erasing: {x: number, y: number}|null, x: number, y: number, last: {x: number, y: number},
  *         start: object, camera: object, position: object|null, moved: boolean, lastSent: number}|null}
  */
@@ -38,13 +43,16 @@ let drag = null;
 let engaged = null;
 /**
  * The engaged hologram's active tool: "waypoint" (a click places a pin), "draw" (a drag inks the surface),
- * "erase" (a click or drag removes the strokes under it) or null.
+ * "erase" (a click or drag removes the strokes and measurements under it), "measure" (drag, or click twice, between
+ * two points), "adjust" (the measure glyph's second mode: drag measurement ends) or null.
  * @type {string|null}
  */
 let tool = null;
 /** Ink this client picked for new pins and strokes; null uses the one that stands out most on the hologram. */
 let ink = null;
 let strokeWidth = 2;
+/** Where a click-click measurement started ({u, v}), waiting for its second click. */
+let measureStart = null;
 let lastClick = {tile: null, time: 0};
 let wheelSave = null;
 
@@ -58,6 +66,7 @@ export function registerInteraction() {
   window.addEventListener("pointerup", onPointerUp, {capture: true});
   window.addEventListener("pointercancel", onPointerUp, {capture: true});
   window.addEventListener("wheel", onWheel, {capture: true, passive: false});
+  window.addEventListener("keydown", onKeyDown, {capture: true});
   Hooks.on("refreshTile", tile => refreshRing(tile));
   Hooks.on("updateTile", doc => refreshRing(doc.object));
   Hooks.on("updateJournalEntry", () => refreshRing());
@@ -65,14 +74,18 @@ export function registerInteraction() {
     if ( tile === engaged ) setEngaged(null);
   });
   Hooks.on("canvasTearDown", () => setEngaged(null));
-  Hooks.once("canvasReady", () => canvas.app.ticker.add(updateCard));
+  Hooks.once("canvasReady", () => {
+    canvas.app.ticker.add(updateCard);
+    canvas.app.ticker.add(updateMeasureCard);
+  });
 }
 
 /** @param {{tile: Tile, holo: HoloRenderer}|null} hit */
 function setEngaged(hit) {
+  cancelMeasure();
   engaged = hit?.tile ?? null;
   tool = null;
-  closeCard();
+  closeCards();
   if ( !hit ) return hideRing();
   const {tile, holo} = hit;
   showRing(tile, {
@@ -81,17 +94,24 @@ function setEngaged(hit) {
     waypoint: () => toggleTool("waypoint", holo),
     draw: () => toggleTool("draw", holo),
     erase: () => toggleTool("erase", holo),
+    // The ruler has two modes: off → making measurements → moving their ends → off.
+    measure: () => setTool((tool === "measure") ? "adjust" : ((tool === "adjust") ? null : "measure"), holo),
     settings: () => HoloConfig.open(tile.document)
   });
 }
 
-/** Switch a ring tool on (switching the other off) or off, with the ink strip under it while on. */
+/** Switch a ring tool on (switching the others off), or off if it already is. */
 function toggleTool(name, holo) {
-  tool = (tool === name) ? null : name;
-  setGlyphOn("waypoint", tool === "waypoint");
-  setGlyphOn("draw", tool === "draw");
-  setGlyphOn("erase", tool === "erase");
-  if ( !tool || (tool === "erase") ) return setStrip(null);
+  setTool((tool === name) ? null : name, holo);
+}
+
+/** Make a tool the active one (or none), lighting its glyph, with the ink strip under it for pins and the pen. */
+function setTool(name, holo) {
+  cancelMeasure();
+  tool = name;
+  for ( const glyph of ["waypoint", "draw", "erase"] ) setGlyphOn(glyph, tool === glyph);
+  setGlyphOn("measure", ["measure", "adjust"].includes(tool), (tool === "adjust") ? 2 : 1);
+  if ( !["waypoint", "draw"].includes(tool) ) return setStrip(null);
   setStrip({
     glyph: tool,
     ink: currentInk(holo),
@@ -103,6 +123,24 @@ function toggleTool(name, holo) {
 
 function currentInk(holo) {
   return ink ?? contrastingInk(holo.data.look.color);
+}
+
+function closeCards() {
+  closeCard();
+  closeMeasureCard();
+}
+
+/** Drop a measurement waiting for its second click. */
+function cancelMeasure() {
+  measureStart = null;
+  if ( engaged ) getHolograms().get(engaged)?.setLiveMeasure(null);
+}
+
+function onKeyDown(event) {
+  if ( (event.key !== "Escape") || !measureStart ) return;
+  event.preventDefault();
+  event.stopImmediatePropagation(); // Don't also deselect or close windows
+  cancelMeasure();
 }
 
 function swallow(event) {
@@ -164,7 +202,7 @@ function placeableAt(event) {
 }
 
 function onPointerDown(event) {
-  if ( (event.button !== 0) || isRingEvent(event) || isCardEvent(event) ) return;
+  if ( (event.button !== 0) || isRingEvent(event) || isCardEvent(event) || isMeasureCardEvent(event) ) return;
   const hit = hologramAt(event);
   if ( hit?.tile !== engaged ) setEngaged(hit);
   if ( !hit ) return;
@@ -184,14 +222,25 @@ function onPointerDown(event) {
   const erasing = ((tool === "erase") && !event.shiftKey) ? texturePoint : null;
   if ( erasing ) eraseAlong(tile, holo, erasing, erasing);
   // A pressed pin opens its card on click; it's only dragged when unlocked (a locked pin lets the drag orbit).
-  const pressed = ["draw", "erase"].includes(tool) ? null : holo.markerAt(texturePoint);
+  const pressed = ["draw", "erase", "measure", "adjust"].includes(tool) ? null : holo.markerAt(texturePoint);
   const locked = !!holo.markers.find(m => m.id === pressed)?.locked;
+  // In the ruler's second mode, a press on a measurement's end dot grabs it.
+  const end = ((tool === "adjust") && !event.shiftKey) ? holo.measureEndAt(texturePoint) : null;
+  const measureEnd = end && grabMeasureEnd(holo, end);
+  // A measurement's label opens its card on click, without a tool or with the ruler (unless mid-measurement).
+  const canOpenLabel = !pressed && !measureEnd
+    && ((tool === null) || (tool === "adjust") || ((tool === "measure") && !measureStart));
+  const label = canOpenLabel ? holo.measureAt(texturePoint) : null;
+  const measure = ((tool === "measure") && !event.shiftKey && !label) ? startMeasure(holo, texturePoint) : null;
   drag = {
     tile, holo,
     pointerId: event.pointerId,
     pan: event.shiftKey,
     pressed,
     marker: locked ? null : pressed,
+    label,
+    measure,
+    measureEnd,
     toolOn: !!tool,
     pen,
     stroke: pen ? startStroke(holo, canvasPoint(event)) : null,
@@ -208,7 +257,8 @@ function onPointerDown(event) {
 }
 
 function onPointerMove(event) {
-  if ( !drag || (event.pointerId !== drag.pointerId) ) return;
+  if ( !drag ) return hoverMeasure(event);
+  if ( event.pointerId !== drag.pointerId ) return;
   swallow(event);
   if ( drag.pen ) return extendStroke(event);
   if ( drag.erasing ) {
@@ -222,6 +272,8 @@ function onPointerMove(event) {
   if ( !drag.moved && (Math.hypot(dx, dy) < CLICK_SLOP) ) return;
   drag.moved = true;
   const {start, camera, holo} = drag;
+  if ( drag.measure ) return moveMeasureEnd(holo, drag.measure, canvasPoint(event));
+  if ( drag.measureEnd ) return dragMeasureEnd(holo, drag.measureEnd, canvasPoint(event));
 
   // Dragging a waypoint slides it across the surface under the pointer.
   if ( drag.marker ) {
@@ -250,7 +302,8 @@ function onPointerMove(event) {
 function onPointerUp(event) {
   if ( !drag || (event.pointerId !== drag.pointerId) ) return;
   swallow(event);
-  const {tile, holo, camera, moved, pressed, marker, position, pan, toolOn, pen, stroke, erasing} = drag;
+  const {tile, holo, camera, moved, pressed, marker, label, measure, measureEnd, position, pan, toolOn, pen, stroke,
+    erasing} = drag;
   drag = null;
   holo.dragging = false;
   if ( stroke ) holo.setLiveStroke(null);
@@ -258,6 +311,15 @@ function onPointerUp(event) {
 
   if ( stroke ) return finishStroke(tile, holo, stroke);
   if ( pen || erasing ) return;
+  if ( measure ) return finishMeasure(tile, holo, measure, moved);
+  if ( measureEnd ) {
+    const {id, points} = measureEnd;
+    // The moved points stay on show until the save comes back (see HoloRenderer#configure).
+    if ( moved ) editAnnotations(tile.document, "measures", {type: "update", id, changes: {points}});
+    else holo.setLiveMeasurePoints(id, null);
+    return;
+  }
+  if ( label && !moved ) return openMeasure(tile, holo, label);
   if ( pressed && !moved ) return openMarkerCard(tile, holo, pressed);
   if ( marker ) {
     if ( position ) editAnnotations(tile.document, "markers", {type: "update", id: marker, changes: position});
@@ -273,7 +335,7 @@ function onPointerUp(event) {
   // A click on the hologram itself; with a tool on it never toggles auto-spin.
   if ( tool === "waypoint" ) return placeMarker(tile, holo, canvasPoint(event));
   if ( toolOn ) return;
-  closeCard();
+  closeCards();
   const now = performance.now();
   if ( (lastClick.tile === tile) && (now - lastClick.time < DOUBLE_CLICK_MS) ) {
     lastClick = {tile: null, time: 0};
@@ -331,9 +393,9 @@ function extendStroke(event) {
 function eraseAlong(tile, holo, from, to) {
   if ( tile.destroyed ) return;
   const texelsPerPixel = (holo.renderTexture.width / tile.document.width) / canvas.stage.scale.x;
-  for ( const id of holo.strokesAlong(from, to, ERASER_RADIUS * texelsPerPixel) ) {
-    holo.hideStroke(id);
-    editAnnotations(tile.document, "strokes", {type: "delete", id});
+  for ( const {list, id} of holo.annotationsAlong(from, to, ERASER_RADIUS * texelsPerPixel) ) {
+    holo.hide(list, id);
+    editAnnotations(tile.document, list, {type: "delete", id});
   }
 }
 
@@ -341,11 +403,92 @@ function eraseAlong(tile, holo, from, to) {
 function finishStroke(tile, holo, stroke) {
   if ( stroke.points.length < 4 ) return;
   stroke.points = simplifyStroke(stroke.points, STROKE_TOLERANCE, MAX_STROKE_POINTS);
-  holo.addPendingStroke(stroke);
+  holo.addPending("strokes", stroke);
   editAnnotations(tile.document, "strokes", {type: "add", item: stroke});
 }
 
+/**
+ * Begin a measurement at a press on the surface, or finish one waiting for its second click there.
+ * @returns {{a: object, b: object, second: boolean}|null}   Null off the surface or when the hologram is full
+ */
+function startMeasure(holo, texturePoint) {
+  const point = holo.surfaceAt(texturePoint);
+  if ( !point ) return null;
+  if ( !measureStart && (holo.data.annotations.measures.length >= MAX_MEASURES) ) {
+    ui.notifications.warn(game.i18n.format("VIRAHOLO.MeasureLimit", {max: MAX_MEASURES}));
+    return null;
+  }
+  const measure = {a: measureStart ?? point, b: point, second: !!measureStart};
+  showMeasure(holo, measure);
+  return measure;
+}
+
+function showMeasure(holo, {a, b}) {
+  holo.setLiveMeasure({points: [a.u, a.v, b.u, b.v]});
+}
+
+/** Move the measurement's end to the surface under a canvas point (it stays put off the surface). */
+function moveMeasureEnd(holo, measure, point) {
+  const end = holo.surfaceAt(holo.toTexturePoint(point));
+  if ( !end ) return;
+  measure.b = end;
+  showMeasure(holo, measure);
+}
+
+/** While a measurement waits for its second click, its end follows the pointer. */
+function hoverMeasure(event) {
+  if ( !measureStart || !engaged || (event.target !== canvas.app?.view) ) return;
+  const holo = getHolograms().get(engaged);
+  if ( holo ) moveMeasureEnd(holo, {a: measureStart, b: measureStart}, canvasPoint(event));
+}
+
+/**
+ * A drag, or a second click, saves the measurement; a first click leaves it waiting for the second.
+ */
+function finishMeasure(tile, holo, {a, b, second}, moved) {
+  if ( !second && !moved ) {
+    measureStart = a;
+    return;
+  }
+  cancelMeasure();
+  if ( Math.hypot(b.u - a.u, b.v - a.v) < 1e-3 ) return;
+  const measure = {id: foundry.utils.randomID(), points: [a.u, a.v, b.u, b.v]};
+  holo.addPending("measures", measure);
+  editAnnotations(tile.document, "measures", {type: "add", item: measure});
+}
+
+/** Start moving one end of a measurement. */
+function grabMeasureEnd(holo, {id, end}) {
+  const measure = holo.data.annotations.measures.find(m => m.id === id);
+  return measure ? {id, end, points: [...measure.points]} : null;
+}
+
+/** Slide the grabbed end across the surface under the pointer (it stays put off the surface). */
+function dragMeasureEnd(holo, measureEnd, point) {
+  const position = holo.surfaceAt(holo.toTexturePoint(point));
+  if ( !position ) return;
+  measureEnd.points.splice(measureEnd.end * 2, 2, position.u, position.v);
+  holo.setLiveMeasurePoints(measureEnd.id, [...measureEnd.points]);
+}
+
+function openMeasure(tile, holo, id) {
+  closeCard();
+  openMeasureCard(tile, holo, id, {
+    remove: () => {
+      holo.hide("measures", id);
+      editAnnotations(tile.document, "measures", {type: "delete", id});
+    },
+    // The scale is part of the hologram's settings, so only GMs change it.
+    calibrate: game.user.isGM ? (distance, unit) => {
+      const measure = holo.data.annotations.measures.find(m => m.id === id);
+      const scale = measure && sanitizeScale(holo.scaleFrom(measure.points, distance, unit));
+      if ( scale ) writeHolo(tile.document, {scale});
+    } : undefined
+  });
+}
+
 function openMarkerCard(tile, holo, id) {
+  closeMeasureCard();
   openCard(tile, holo, id, {
     update: changes => editAnnotations(tile.document, "markers", {type: "update", id, changes}),
     remove: () => editAnnotations(tile.document, "markers", {type: "delete", id}),

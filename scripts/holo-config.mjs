@@ -1,4 +1,4 @@
-import {LINK_SECTIONS, MODULE_ID, defaultCamera, getHoloData} from "./data.mjs";
+import {LINK_SECTIONS, MODULE_ID, UNITS, defaultCamera, getHoloData} from "./data.mjs";
 import {editAnnotations} from "./annotations.mjs";
 import {createLink, joinLink, leaveLink, linkChoices, writeHolo} from "./links.mjs";
 
@@ -47,6 +47,7 @@ export default class HoloConfig extends HandlebarsApplicationMixin(DocumentSheet
       resetView: HoloConfig.#onResetView,
       clearMarkers: HoloConfig.#onClearMarkers,
       clearStrokes: HoloConfig.#onClearStrokes,
+      clearMeasures: HoloConfig.#onClearMeasures,
       createLink: HoloConfig.#onCreateLink,
       joinLink: HoloConfig.#onJoinLink,
       leaveLink: HoloConfig.#onLeaveLink,
@@ -130,6 +131,9 @@ export default class HoloConfig extends HandlebarsApplicationMixin(DocumentSheet
       cameraSliders: sliders("camera"),
       markerCount: holo.annotations.markers.length,
       strokeCount: holo.annotations.strokes.length,
+      measureCount: holo.annotations.measures.length,
+      units: Object.fromEntries(Object.keys(UNITS).map(u => [u, localize(`VIRAHOLO.Units.${u}`)])),
+      axes: {width: localize("VIRAHOLO.Config.scale.width"), height: localize("VIRAHOLO.Config.scale.height")},
       players: game.users.filter(u => !u.isGM).map(u => ({id: u.id, name: u.name, owner: holo.owners.includes(u.id)}))
     });
   }
@@ -200,6 +204,14 @@ export default class HoloConfig extends HandlebarsApplicationMixin(DocumentSheet
       content: `<p>${game.i18n.localize("VIRAHOLO.Config.clearStrokesConfirm")}</p>`
     });
     if ( confirmed ) await editAnnotations(this.document, "strokes", {type: "clear"});
+  }
+
+  static async #onClearMeasures() {
+    const confirmed = await foundry.applications.api.DialogV2.confirm({
+      window: {title: "VIRAHOLO.Config.clearMeasures"},
+      content: `<p>${game.i18n.localize("VIRAHOLO.Config.clearMeasuresConfirm")}</p>`
+    });
+    if ( confirmed ) await editAnnotations(this.document, "measures", {type: "clear"});
   }
 
   static async #onResetView() {

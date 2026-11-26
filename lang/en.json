@@ -13,7 +13,8 @@
       "settings": "Hologram settings",
       "waypoint": "Waypoint tool: click the hologram to place a pin",
       "draw": "Draw tool: drag across the hologram to ink it",
-      "erase": "Eraser: click or drag over drawings to remove them",
+      "erase": "Eraser: click or drag over drawings and measurements to remove them",
+      "measure": "Ruler: click for measuring (drag, or click both ends), again for moving ends, again for off. Click a distance label for options.",
       "ink": "Ink",
       "customInk": "Custom ink",
       "width": {
@@ -84,8 +85,21 @@
       "clearStrokes": "Clear all drawings",
       "clearStrokesConfirm": "Remove every drawing from this hologram?",
       "strokesHint": "Draw with the pen glyph on the hologram's tool ring (pick the ink and width below it); remove drawings with the eraser glyph.",
+      "measureCount": "Measurements",
+      "clearMeasures": "Clear all measurements",
+      "clearMeasuresConfirm": "Remove every measurement from this hologram?",
+      "measuresHint": "Measure with the ruler glyph on the hologram's tool ring; click a distance label to delete it or set the scale from it.",
       "camera": {
         "spin": "Auto-spin speed"
+      },
+      "scale": {
+        "legend": "Scale",
+        "covers": "Map covers",
+        "unit": "Unit",
+        "across": "Across its",
+        "width": "Width",
+        "height": "Height",
+        "hint": "Real-world size of the image, for measurements (0 = no scale). Or measure a line of known length on the hologram, click its label and enter how long it really is."
       }
     },
     "Card": {
@@ -136,6 +150,27 @@
       "Hint": "A link lets several holograms share their content, waypoints, view or look, e.g. three map tables or thirty notice boards. Links are journal entries in the Holo Links folder.",
       "Missing": "This hologram's link (journal entry) no longer exists, so it shows its own settings."
     },
-    "StrokeLimit": "This hologram already has {max} drawings; clear some first."
+    "StrokeLimit": "This hologram already has {max} drawings; clear some first.",
+    "Units": {
+      "m": "m",
+      "km": "km",
+      "ft": "ft",
+      "mi": "mi"
+    },
+    "Measure": {
+      "Title": "Measurement",
+      "Close": "Close",
+      "NoScale": "No scale",
+      "ThisIs": "This is",
+      "Length": "Real length",
+      "Unit": "Unit",
+      "SetScale": "Set scale",
+      "SetScaleHint": "Set the hologram's scale so this line is this long",
+      "Delete": "Delete",
+      "Hint": "Measured across the map, not along its slopes.",
+      "HintNoScale": "This hologram has no scale yet; the GM can set one.",
+      "HintGM": "Enter this line's real length to set the hologram's scale from it."
+    },
+    "MeasureLimit": "This hologram already has {max} measurements; delete some first."
   }
 }

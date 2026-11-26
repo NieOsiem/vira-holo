@@ -27,7 +27,7 @@ function activeGM() {
 /**
  * Ask the active GM to apply a waypoint or stroke edit.
  * @param {TileDocument} doc
- * @param {"markers"|"strokes"} list
+ * @param {"markers"|"strokes"|"measures"} list
  * @param {import("./annotations.mjs").AnnotationEdit} edit
  */
 export function requestAnnotationEdit(doc, list, edit) {
