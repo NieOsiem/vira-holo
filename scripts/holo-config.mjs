@@ -102,7 +102,8 @@ export default class HoloConfig extends HandlebarsApplicationMixin(DocumentSheet
       value: holo[section][key],
       label: localize(`VIRAHOLO.Config.${section}.${key}`)
     }));
-    const FontConfig = foundry.applications.settings?.menus?.FontConfig ?? globalThis.FontConfig;
+    // v12 declares FontConfig as a top-level class: a global binding, but not a property of globalThis.
+    const Fonts = foundry.applications.settings?.menus?.FontConfig ?? FontConfig;
     const choices = linkChoices();
     return Object.assign(context, {
       holo,
@@ -125,7 +126,7 @@ export default class HoloConfig extends HandlebarsApplicationMixin(DocumentSheet
       isTerrain: holo.mode === "terrain",
       isText: holo.mode === "text",
       modes: Object.fromEntries(["image", "terrain", "text"].map(m => [m, localize(`VIRAHOLO.Mode.${m}`)])),
-      fonts: {"": localize("VIRAHOLO.Config.text.defaultFont"), ...FontConfig.getAvailableFontChoices()},
+      fonts: {"": localize("VIRAHOLO.Config.text.defaultFont"), ...Fonts.getAvailableFontChoices()},
       aligns: Object.fromEntries(["left", "center", "right"].map(a => [a, localize(`VIRAHOLO.Config.text.${a}`)])),
       lookSliders: sliders("look"),
       terrainSliders: sliders("terrain"),

@@ -230,7 +230,8 @@ function placeableAt(event) {
   const events = canvas.app.renderer.events;
   const point = new PIXI.Point();
   events.mapPositionToPoint(point, event.clientX, event.clientY);
-  const Placeable = foundry.canvas.placeables?.PlaceableObject ?? globalThis.PlaceableObject;
+  // v12 declares PlaceableObject as a top-level class: a global binding, but not a property of globalThis.
+  const Placeable = foundry.canvas.placeables?.PlaceableObject ?? PlaceableObject;
   for ( let target = events.rootBoundary.hitTest(point.x, point.y); target; target = target.parent ) {
     if ( target instanceof Placeable ) return target;
   }
