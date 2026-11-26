@@ -3,7 +3,12 @@
   "title": "Vira Holo",
   "description": "Displays holographic projections of maps, images, and text in Foundry VTT.",
   "version": "0.1.0",
-  "authors": [],
+  "authors": [
+    {
+      "name": "NieOsiem",
+      "url": "https://github.com/NieOsiem"
+    }
+  ],
   "esmodules": [
     "vira-holo.mjs"
   ],
@@ -22,7 +27,11 @@
     "minimum": "12",
     "verified": "14"
   },
-  "url": "",
-  "manifest": "",
-  "download": ""
+  "url": "https://github.com/NieOsiem/vira-holo",
+  "manifest": "https://github.com/NieOsiem/vira-holo/releases/latest/download/module.json",
+  "download": "https://github.com/NieOsiem/vira-holo/releases/download/v0.1.0/module.zip",
+  "readme": "README.md",
+  "license": "LICENSE",
+  "bugs": "https://github.com/NieOsiem/vira-holo/issues",
+  "changelog": "https://github.com/NieOsiem/vira-holo/releases"
 }

@@ -1,0 +1,84 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      # vira-holo.mjs and vira-holo.css are not in the template's defaults.
+      RUNTIME_PATHS: README.md LICENSE vira-holo.mjs vira-holo.css scripts templates lang
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate tag
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="$GITHUB_REF_NAME"
+          version="${tag#v}"
+
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Tag '$tag' is not vMAJOR.MINOR.PATCH."
+            exit 1
+          fi
+
+          manifest_version="$(jq -r '.version' module.json)"
+          if [[ "$manifest_version" != "$version" ]]; then
+            echo "::error::Tag '$tag' does not match module.json version '$manifest_version'."
+            exit 1
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Build release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          staging="$(mktemp -d)"
+
+          cp module.json "$staging/module.json"
+          jq \
+            --arg version '${{ steps.version.outputs.version }}' \
+            --arg manifest "https://github.com/$GITHUB_REPOSITORY/releases/latest/download/module.json" \
+            --arg download "https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/module.zip" \
+            '.version = $version | .manifest = $manifest | .download = $download' \
+            "$staging/module.json" > "$staging/module.tmp.json"
+          mv "$staging/module.tmp.json" "$staging/module.json"
+
+          read -r -a paths <<< "$RUNTIME_PATHS"
+          for path in "${paths[@]}"; do
+            if [[ -e "$path" ]]; then
+              cp -R "$path" "$staging/"
+            fi
+          done
+
+          (cd "$staging" && zip -rqX "$GITHUB_WORKSPACE/module.zip" .)
+          cp "$staging/module.json" module.json
+
+          unzip -Z1 module.zip | grep -qx module.json
+
+      - name: Publish release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="$GITHUB_REF_NAME"
+
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$tag" module.json module.zip \
+              --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$tag" module.json module.zip \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "v${{ steps.version.outputs.version }}" \
+              --generate-notes
+          fi
