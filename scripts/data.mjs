@@ -43,7 +43,9 @@ export const DEFAULTS = Object.freeze({
     relief: 0.4,
     resolution: 160,
     wire: 0.6,
-    contours: 0.5
+    contours: 0.5,
+    /** Display style (DISPLAY_MODES): see-through or opaque, wireframe or terrain. */
+    display: "xray"
   },
   annotations: {
     /**
@@ -183,6 +185,8 @@ export const MAX_STROKE_POINTS = 400;
 /** Stroke width tiers: tier → line width relative to a medium stroke. */
 export const STROKE_WIDTHS = Object.freeze({1: 0.5, 2: 1, 3: 1.8});
 export const MAX_MEASURES = 50;
+/** Terrain display styles, in the order the ring cycles through them. */
+export const DISPLAY_MODES = Object.freeze(["wireXray", "wire", "xray", "solid"]);
 /** Ink of measurements, as in the mockup. */
 export const MEASURE_INK = "#ffe066";
 

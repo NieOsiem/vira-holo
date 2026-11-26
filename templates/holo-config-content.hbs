@@ -53,6 +53,12 @@
       </div>
       <p class="hint">{{localize "VIRAHOLO.Config.terrain.heightmapHint"}}</p>
     </div>
+    <div class="form-group">
+      <label for="{{partId}}-display">{{localize "VIRAHOLO.Config.terrain.display"}}</label>
+      <div class="form-fields">
+        <select id="{{partId}}-display" name="{{flags}}.terrain.display">{{selectOptions displayModes selected=holo.terrain.display}}</select>
+      </div>
+    </div>
     {{#each terrainSliders}}
     <div class="form-group">
       <label>{{label}}</label>

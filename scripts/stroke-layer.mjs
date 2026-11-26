@@ -116,6 +116,11 @@ export default class StrokeLayer {
     }
   }
 
+  /** Use another render state (depth testing) for both passes. */
+  setState(state) {
+    for ( const mesh of this.container.children ) mesh.state = state;
+  }
+
   destroy() {
     this.container.destroy({children: true});
     this.geometry.destroy();

@@ -1,4 +1,4 @@
-import {MODULE_ID, canDrive} from "./data.mjs";
+import {DISPLAY_MODES, MODULE_ID, canDrive} from "./data.mjs";
 import {applyAnnotationEdit} from "./annotations.mjs";
 import {writeHolo} from "./links.mjs";
 import {showLiveCamera} from "./tile-holo.mjs";
@@ -45,9 +45,10 @@ export function broadcastCamera(doc, camera) {
 }
 
 /**
- * Save what a driver changed (the camera, including auto-spin). GMs write directly; owners ask the active GM.
+ * Save what a driver changed (the camera, including auto-spin, and the terrain's display style). GMs write directly;
+ * owners ask the active GM.
  * @param {TileDocument} doc
- * @param {{camera: object}} changes
+ * @param {{camera?: object, terrain?: {display: string}}} changes
  */
 export function saveDriverChanges(doc, changes) {
   if ( game.user.isGM ) return writeHolo(doc, sanitize(changes));
@@ -77,9 +78,12 @@ function onAnnotations({uuid, list, edit}, sender) {
   applyAnnotationEdit(doc, list, edit); // The list name and every field are checked there
 }
 
-/** Only the fields a driver may change, and only as finite numbers. */
-function sanitize({camera}={}) {
-  return camera ? {camera: pickCamera(camera)} : {};
+/** Only the fields a driver may change: camera numbers and a known display style. */
+function sanitize({camera, terrain}={}) {
+  const changes = {};
+  if ( camera ) changes.camera = pickCamera(camera);
+  if ( DISPLAY_MODES.includes(terrain?.display) ) changes.terrain = {display: terrain.display};
+  return changes;
 }
 
 function pickCamera(camera={}) {

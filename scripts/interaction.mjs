@@ -1,5 +1,5 @@
-import {DEFAULTS, MARKER_GLYPHS, MAX_MEASURES, MAX_STROKES, MAX_STROKE_POINTS, canDrive, contrastingInk, defaultCamera,
-  sanitizeScale} from "./data.mjs";
+import {DEFAULTS, DISPLAY_MODES, MARKER_GLYPHS, MAX_MEASURES, MAX_STROKES, MAX_STROKE_POINTS, canDrive, contrastingInk,
+  defaultCamera, sanitizeScale} from "./data.mjs";
 import * as history from "./history.mjs";
 import HoloConfig from "./holo-config.mjs";
 import {MAX_DIST, MAX_PITCH, MIN_DIST, MIN_PITCH} from "./holo-renderer.mjs";
@@ -92,6 +92,7 @@ function setEngaged(hit) {
   showRing(tile, {
     recenter: () => recenter(tile, holo),
     spin: () => toggleSpin(tile, holo),
+    display: () => cycleDisplay(tile, holo),
     waypoint: () => toggleTool("waypoint", holo),
     draw: () => toggleTool("draw", holo),
     erase: () => toggleTool("erase", holo),
@@ -550,6 +551,12 @@ function recenter(tile, holo) {
   showLiveCamera(tile.document, camera);
   broadcastCamera(tile.document, camera);
   saveDriverChanges(tile.document, {camera});
+}
+
+/** Switch the terrain to the next display style (see-through or opaque, wireframe or terrain). */
+function cycleDisplay(tile, holo) {
+  const current = DISPLAY_MODES.indexOf(holo.data.terrain.display);
+  saveDriverChanges(tile.document, {terrain: {display: DISPLAY_MODES[(current + 1) % DISPLAY_MODES.length]}});
 }
 
 /** Stop or restart auto-spin, keeping the hologram where it currently is on screen. */

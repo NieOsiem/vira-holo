@@ -1,4 +1,4 @@
-import {INKS, STROKE_WIDTHS, getHoloData} from "./data.mjs";
+import {DISPLAY_MODES, INKS, STROKE_WIDTHS, getHoloData} from "./data.mjs";
 
 /** Stroke glyphs in the style of the original mockup. */
 const GLYPHS = {
@@ -15,6 +15,16 @@ const GLYPHS = {
   settings: '<path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/>'
     + '<circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/>'
 };
+/** The terrain display glyph shows the current style: a two-peak mountain, wireframe or filled, see-through or not. */
+const MOUNTAIN = "M2 19 9 6.5l4 6 3-4.5 6 11z";
+const DISPLAY_GLYPHS = {
+  wireXray: `<path d="${MOUNTAIN}"/><path d="M5.5 13h12M9 6.5 11 19M16 8l-2 11" stroke-dasharray="1.6 1.6"/>`,
+  wire: `<path d="${MOUNTAIN}"/><path d="M5.5 13h12M9 6.5 11 19M16 8l-2 11"/>`,
+  xray: `<path d="${MOUNTAIN}" fill="currentColor" fill-opacity="0.3"/><path d="M5.5 13h12M9 6.5 11 19"/>`,
+  solid: `<path d="${MOUNTAIN}" fill="currentColor"/>`
+};
+GLYPHS.display = DISPLAY_GLYPHS.xray;
+
 /** Angle between neighbouring glyphs along the projection's edge, in radians. */
 const ARC_STEP = 0.13;
 /** Glyphs sit on this fraction of the projection ellipse. */
@@ -29,8 +39,8 @@ const ARC_RADIUS = 0.8;
  * @property {(width: number) => void} [onWidth]
  */
 
-/** @type {{tile: Tile, element: HTMLElement, buttons: HTMLButtonElement[], strip: HTMLElement|null,
- *          stripGlyph: string|null}|null} */
+/** @type {{tile: Tile, actions: object, terrain: boolean, element: HTMLElement, buttons: HTMLButtonElement[],
+ *          strip: HTMLElement|null, stripGlyph: string|null, display: string|null}|null} */
 let ring = null;
 
 /**
@@ -44,7 +54,9 @@ export function showRing(tile, actions) {
   hideRing();
   const element = document.createElement("div");
   element.className = "vira-holo-ring";
-  const names = ["recenter", "spin", "waypoint", "draw", "erase", "measure", "undo", "redo", ...(game.user.isGM ? ["settings"] : [])];
+  const terrain = getHoloData(tile.document).mode === "terrain";
+  const names = ["recenter", "spin", ...(terrain ? ["display"] : []), "waypoint", "draw", "erase", "measure", "undo",
+    "redo", ...(game.user.isGM ? ["settings"] : [])];
   const buttons = names.map((name, index) => {
     const button = document.createElement("button");
     button.type = "button";
@@ -62,7 +74,7 @@ export function showRing(tile, actions) {
     element.append(button);
     return button;
   });
-  ring = {tile, element, buttons, strip: null, stripGlyph: null};
+  ring = {tile, actions, terrain, element, buttons, strip: null, stripGlyph: null, display: null};
   refreshRing();
 }
 
@@ -160,7 +172,21 @@ export function refreshRing(tile) {
   if ( tile.destroyed || !tile.visible || !hud ) return hideRing();
   if ( !element.isConnected ) hud.append(element);
 
-  const {look, camera} = getHoloData(tile.document);
+  const {look, camera, mode, terrain: {display}} = getHoloData(tile.document);
+  // The display glyph is only there for terrain: rebuild the ring when the mode changes.
+  if ( (mode === "terrain") !== ring.terrain ) {
+    const {actions} = ring;
+    hideRing();
+    return showRing(tile, actions);
+  }
+  const displayButton = element.querySelector('[data-glyph="display"]');
+  if ( displayButton && (ring.display !== display) ) {
+    ring.display = display;
+    displayButton.querySelector("svg").innerHTML = DISPLAY_GLYPHS[display] ?? DISPLAY_GLYPHS.xray;
+    const label = `${game.i18n.localize("VIRAHOLO.Ring.display")}: ${game.i18n.localize(`VIRAHOLO.Display.${display}`)}`;
+    displayButton.dataset.tooltip = label;
+    displayButton.setAttribute("aria-label", label);
+  }
   const {width, height, rotation} = tile.document;
   const {x: cx, y: cy} = tile.center;
   const size = Math.clamp(Math.min(width, height) * 0.042, 14, 54);

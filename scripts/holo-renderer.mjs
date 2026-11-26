@@ -40,6 +40,14 @@ const MEASURE_DASHES = 14;
 /** Approximate number of wireframe lines across the terrain in each direction. */
 const WIRE_LINES = 40;
 const CONTOUR_LEVELS = 12;
+/**
+ * View depth mapped to the far end of the depth buffer (the near end is the camera). Everything drawn is well within
+ * it at any camera distance, so one fixed range serves every mesh, the projector disc's own camera included.
+ */
+const DEPTH_FAR = 24;
+/** How far (in depth-buffer units) wireframe and strokes resting on the terrain are pulled towards the camera. */
+const WIRE_DEPTH_BIAS = 0.0006;
+const STROKE_DEPTH_BIAS = 0.003;
 /** Most data motes, at full density. */
 const MAX_MOTES = 160;
 /** Mote animation repeats every this many seconds; each mote rises a whole number of times per period. */
@@ -60,15 +68,19 @@ vec3 view(vec3 p) {
   float z = z1 * cp - p.y * sp;
   return vec3(x, -y, z);
 }
-// offset: pixels from the centre, times w (the GPU divides by w).
-vec4 clipFrom(vec2 offset, float w) {
+// offset: pixels from the centre, times w (the GPU divides by w). Depth is linear in w over [0, DEPTH_FAR]; bias pulls
+// it towards the camera, for lines lying on a surface.
+vec4 clipFrom(vec2 offset, float w, float bias) {
   vec3 clip = projectionMatrix * translationMatrix * vec3(uCenter * w + offset, w);
-  return vec4(clip.xy, 0.0, w);
+  return vec4(clip.xy, (2.0 * w / ${DEPTH_FAR.toFixed(1)} - 1.0 - bias) * w, w);
 }
-vec4 project(vec3 p) {
+vec4 projectBiased(vec3 p, float bias) {
   vec3 v = view(p);
   vDepth = v.z;
-  return clipFrom(v.xy * ${FOCAL.toFixed(2)} * uCamera.w, v.z + uCamera.z);
+  return clipFrom(v.xy * ${FOCAL.toFixed(2)} * uCamera.w, v.z + uCamera.z, bias);
+}
+vec4 project(vec3 p) {
+  return projectBiased(p, 0.0);
 }`;
 
 const CAMERA_UNIFORMS = `
@@ -104,16 +116,27 @@ uniform float uScanDensity;
 uniform float uScanPhase;
 uniform float uFlicker;
 
+float luminance(vec3 rgb) {
+  return smoothstep(0.2, 0.8, dot(rgb, vec3(0.299, 0.587, 0.114)));
+}
+
+// The source image's colour (straight alpha), tinted towards the hologram colour.
+vec3 holoTint(vec4 tex, float shade) {
+  vec3 rgb = tex.a > 0.0 ? tex.rgb / tex.a : vec3(0.0);
+  return mix(rgb, uColor * (0.1 + 1.4 * luminance(rgb)), uTint) * shade;
+}
+
+float scanline() {
+  return 1.0 - uScan * 0.6 * (0.5 + 0.5 * sin((holoPixel().y * uScanDensity + uScanPhase) * 6.2831853));
+}
+
 // Returns premultiplied emitted colour (rgb) and its alpha (a) before solidity.
 vec4 holoColor(vec4 tex, float shade) {
   vec3 rgb = tex.a > 0.0 ? tex.rgb / tex.a : vec3(0.0);
-  float lum = smoothstep(0.2, 0.8, dot(rgb, vec3(0.299, 0.587, 0.114)));
-  vec3 color = mix(rgb, uColor * (0.1 + 1.4 * lum), uTint) * shade;
   // A hologram is emitted light: when tinted, dark parts of the image glow (and block) less.
-  float emission = mix(1.0, 0.2 + 0.8 * lum, uTint);
-  float scan = 1.0 - uScan * 0.6 * (0.5 + 0.5 * sin((holoPixel().y * uScanDensity + uScanPhase) * 6.2831853));
-  float a = tex.a * emission * uOpacity * scan * uFlicker;
-  return vec4(color * a, a);
+  float emission = mix(1.0, 0.2 + 0.8 * luminance(rgb), uTint);
+  float a = tex.a * emission * uOpacity * scanline() * uFlicker;
+  return vec4(holoTint(tex, shade) * a, a);
 }
 
 float depthFade(float depth, float far) {
@@ -175,6 +198,7 @@ uniform sampler2D uHeight;
 uniform float uRelief;
 uniform vec2 uTexel; // one grid cell in UV
 uniform vec2 uCell;  // one grid cell in object space (x, z)
+uniform float uDepthBias;
 out vec2 vUV;
 out float vDepth;
 out float vHeight;
@@ -192,7 +216,7 @@ void main() {
   vHeight = h;
   vec3 p = aVertexPosition;
   p.y += h * uRelief;
-  gl_Position = project(p);
+  gl_Position = projectBiased(p, uDepthBias);
 }`;
 
 const TERRAIN_FRAGMENT = `#version 300 es
@@ -203,15 +227,27 @@ in float vHeight;
 in float vShade;
 ${HOLO_LOOK}
 uniform float uContours;
+uniform float uOpaque;    // 1: an opaque surface (it also fills the depth buffer)
+uniform float uDepthOnly; // 1: only fill the depth buffer, so the wireframe behind hills is hidden
 out vec4 fragColor;
 
 void main() {
+  if ( uDepthOnly > 0.5 ) {
+    fragColor = vec4(0.0);
+    return;
+  }
   float depth = depthFade(vDepth, 0.6);
-  vec4 holo = holoColor(texture(uImage, vUV), vShade) * depth;
+  vec4 tex = texture(uImage, vUV);
   float level = vHeight * ${CONTOUR_LEVELS.toFixed(1)};
   float distToLevel = abs(fract(level + 0.5) - 0.5);
   float contour = (1.0 - smoothstep(0.0, 1.2 * fwidth(level), distToLevel)) * smoothstep(0.02, 0.05, vHeight);
   vec3 lines = uColor * contour * uContours * 0.9 * uFlicker * depth;
+  if ( uOpaque > 0.5 ) {
+    float a = tex.a * uOpacity * uFlicker;
+    fragColor = vec4(holoTint(tex, vShade) * scanline() * depth * a + lines, a) * volumeFade();
+    return;
+  }
+  vec4 holo = holoColor(tex, vShade) * depth;
   fragColor = vec4(holo.rgb + lines, holo.a * uSolidity) * volumeFade();
 }`;
 
@@ -280,7 +316,7 @@ void main() {
   vDistance = aDistance;
   vDepth = v.z;
   float w = v.z + uCamera.z;
-  gl_Position = clipFrom((here + miter * aSide * extent * stretch) * w, w);
+  gl_Position = clipFrom((here + miter * aSide * extent * stretch) * w, w, ${STROKE_DEPTH_BIAS.toFixed(4)});
 }`;
 
 const STROKE_FRAGMENT = `
@@ -533,6 +569,13 @@ export default class HoloRenderer {
     this.volumeUniform = new Float32Array(3);
     this.color = new Float32Array(3);
     this.state = new PIXI.State();
+    // Opaque display styles need a depth buffer: surfaces fill it, lines and motes are tested against it.
+    this.renderTexture.framebuffer.enableDepth();
+    this.depthWriteState = new PIXI.State();
+    this.depthWriteState.depthTest = true;
+    this.depthReadState = new PIXI.State();
+    this.depthReadState.depthTest = true;
+    this.depthReadState.depthMask = false;
 
     const {panel, disc, stroke, mote} = getPrograms();
     this.discGeometry = createQuad();
@@ -771,8 +814,10 @@ export default class HoloRenderer {
       uTexel: new Float32Array([1 / (resolution - 1), 1 / (resolution - 1)]),
       uCell: new Float32Array([(2 * hx) / (resolution - 1), (2 * hz) / (resolution - 1)])
     };
-    const surfaceShader = new PIXI.Shader(terrain, this.#lookUniforms({...shape, uContours: 0}));
-    const wireShader = new PIXI.Shader(wireProgram, {...this.#lookUniforms(shape), uWire: 0});
+    const surfaceShader = new PIXI.Shader(terrain, this.#lookUniforms({...shape, uContours: 0, uOpaque: 0,
+      uDepthOnly: 0, uDepthBias: 0}));
+    const wireShader = new PIXI.Shader(wireProgram, {...this.#lookUniforms(shape), uWire: 0,
+      uDepthBias: WIRE_DEPTH_BIAS});
     this.#terrain = {
       geometries: [surface, wire],
       surfaceShader, wireShader,
@@ -823,6 +868,8 @@ export default class HoloRenderer {
     const showTerrain = !!(this.#terrain && this.#heightmap);
     this.panelMesh.visible = !showTerrain;
     if ( this.#terrain ) for ( const mesh of this.#terrain.meshes ) mesh.visible = showTerrain;
+    const display = showTerrain ? terrain.display : "xray";
+    this.#applyDisplay(display);
 
     this.discMesh.visible = look.projector;
     const image = this.#image;
@@ -844,7 +891,8 @@ export default class HoloRenderer {
         uniforms.uRelief = terrain.relief;
       }
       surfaceShader.uniforms.uContours = terrain.contours;
-      wireShader.uniforms.uWire = terrain.wire;
+      // A wireframe-only display always shows its wireframe, whatever the overlay setting.
+      wireShader.uniforms.uWire = display.startsWith("wire") ? Math.max(terrain.wire, 0.6) : terrain.wire;
     }
     const disc = this.discShader.uniforms;
     disc.uOpacity = look.opacity;
@@ -869,6 +917,30 @@ export default class HoloRenderer {
     uniforms.uPointScale = (Math.min(this.width, this.height) / 250) * this.resolution;
     uniforms.uOpacity = look.opacity;
     uniforms.uFlicker = this.#flicker;
+  }
+
+  /**
+   * Set up a terrain display style, after Blender's viewport: "wireXray" (wireframe, see-through), "wire" (wireframe
+   * with hidden lines removed), "xray" (see-through terrain with its wireframe, the hologram look) or "solid"
+   * (opaque terrain). In the opaque styles strokes, measurement lines and motes hide behind hills; pins and labels
+   * stay on top.
+   * @param {string} display
+   */
+  #applyDisplay(display) {
+    const depth = (display === "wire") || (display === "solid");
+    if ( this.#terrain ) {
+      const [surface, wire] = this.#terrain.meshes;
+      surface.visible &&= display !== "wireXray";
+      surface.state = depth ? this.depthWriteState : this.state;
+      wire.state = depth ? this.depthReadState : this.state;
+      this.#terrain.surfaceShader.uniforms.uOpaque = (display === "solid") ? 1 : 0;
+      this.#terrain.surfaceShader.uniforms.uDepthOnly = (display === "wire") ? 1 : 0;
+    }
+    const tested = depth ? this.depthReadState : this.state;
+    this.moteMesh.state = tested;
+    for ( const layer of [this.strokeLayer, this.liveStrokeLayer, this.measureLines, this.liveMeasureLines] ) {
+      layer.setState(tested);
+    }
   }
 
   /** The camera in effect: a live (unsaved) one while being dragged, otherwise the saved one. */
@@ -985,6 +1057,8 @@ export default class HoloRenderer {
     const {x, y} = this.viewport;
     const r = this.resolution;
     const transform = new PIXI.Matrix(r, 0, 0, r, -x * r, -y * r);
+    // The clear only resets depth while depth writes are on, which the last mesh drawn may have turned off.
+    renderer.state.set(this.state);
     renderer.render(this.stage, {renderTexture: this.renderTexture, clear: true, transform});
   }
 

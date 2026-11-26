@@ -1,4 +1,4 @@
-import {LINK_SECTIONS, MODULE_ID, UNITS, defaultCamera, getHoloData} from "./data.mjs";
+import {DISPLAY_MODES, LINK_SECTIONS, MODULE_ID, UNITS, defaultCamera, getHoloData} from "./data.mjs";
 import * as history from "./history.mjs";
 import {createLink, joinLink, leaveLink, linkChoices, writeHolo} from "./links.mjs";
 
@@ -129,6 +129,7 @@ export default class HoloConfig extends HandlebarsApplicationMixin(DocumentSheet
       aligns: Object.fromEntries(["left", "center", "right"].map(a => [a, localize(`VIRAHOLO.Config.text.${a}`)])),
       lookSliders: sliders("look"),
       terrainSliders: sliders("terrain"),
+      displayModes: Object.fromEntries(DISPLAY_MODES.map(m => [m, localize(`VIRAHOLO.Display.${m}`)])),
       cameraSliders: sliders("camera"),
       markerCount: holo.annotations.markers.length,
       strokeCount: holo.annotations.strokes.length,

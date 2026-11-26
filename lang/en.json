@@ -23,7 +23,8 @@
         "3": "Thick"
       },
       "undo": "Undo your last change to pins, drawings or measurements",
-      "redo": "Redo"
+      "redo": "Redo",
+      "display": "Terrain display"
     },
     "Config": {
       "Open": "Hologram",
@@ -54,7 +55,8 @@
         "relief": "Relief",
         "resolution": "Mesh detail",
         "wire": "Wireframe",
-        "contours": "Contour lines"
+        "contours": "Contour lines",
+        "display": "Display"
       },
       "text": {
         "content": "Text",
@@ -174,6 +176,12 @@
       "HintNoScale": "This hologram has no scale yet; the GM can set one.",
       "HintGM": "Enter this line's real length to set the hologram's scale from it."
     },
-    "MeasureLimit": "This hologram already has {max} measurements; delete some first."
+    "MeasureLimit": "This hologram already has {max} measurements; delete some first.",
+    "Display": {
+      "wireXray": "Wireframe, see-through",
+      "wire": "Wireframe, opaque",
+      "xray": "Terrain, see-through",
+      "solid": "Terrain, opaque"
+    }
   }
 }
