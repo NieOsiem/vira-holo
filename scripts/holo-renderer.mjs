@@ -238,10 +238,15 @@ in float vShade;
 ${HOLO_LOOK}
 uniform float uContours;
 uniform float uOpaque;    // 1: an opaque surface (it also fills the depth buffer)
-uniform float uLinesOnly; // 1: a wireframe style, the surface only draws its lines (and fills the depth buffer if it is tested)
+uniform float uLinesOnly; // 1: only the contour and coast lines (the wireframe styles; drawn by a mesh of their own)
+uniform float uDepthOnly; // 1: only fill the depth buffer, so lines behind hills are hidden
 out vec4 fragColor;
 
 void main() {
+  if ( uDepthOnly > 0.5 ) {
+    fragColor = vec4(0.0);
+    return;
+  }
   float depth = depthFade(vDepth, 0.6);
   float level = vHeight * ${CONTOUR_LEVELS.toFixed(1)};
   float distToLevel = abs(fract(level + 0.5) - 0.5);
@@ -847,15 +852,19 @@ export default class HoloRenderer {
       uCell: new Float32Array([(2 * hx) / (resolution - 1), (2 * hz) / (resolution - 1)])
     };
     const surfaceShader = new PIXI.Shader(terrain, this.#lookUniforms({...shape, uContours: 0, uOpaque: 0,
-      uLinesOnly: 0, uDepthBias: 0}));
+      uLinesOnly: 0, uDepthOnly: 0, uDepthBias: 0}));
+    // The lines of the wireframe styles are a pass of their own: drawn with the surface they would show through hills.
+    const linesShader = new PIXI.Shader(terrain, this.#lookUniforms({...shape, uContours: 0, uOpaque: 0,
+      uLinesOnly: 1, uDepthOnly: 0, uDepthBias: WIRE_DEPTH_BIAS}));
     const wireShader = new PIXI.Shader(wireProgram, {...this.#lookUniforms(shape), uWire: 0,
       uDepthBias: WIRE_DEPTH_BIAS});
     this.#terrain = {
       geometries: [surface, wire],
-      surfaceShader, wireShader,
+      surfaceShader, wireShader, linesShader,
       meshes: [
         new PIXI.Mesh(surface, surfaceShader, this.state),
-        new PIXI.Mesh(wire, wireShader, this.state, PIXI.DRAW_MODES.LINES)
+        new PIXI.Mesh(wire, wireShader, this.state, PIXI.DRAW_MODES.LINES),
+        new PIXI.Mesh(surface, linesShader, this.state)
       ]
     };
     this.stage.addChild(...this.#terrain.meshes);
@@ -910,7 +919,7 @@ export default class HoloRenderer {
 
     this.discMesh.visible = look.projector;
     const image = this.#image;
-    const shaders = showTerrain ? [this.#terrain.surfaceShader, this.#terrain.wireShader] : [this.panelShader];
+    const shaders = showTerrain ? [this.#terrain.surfaceShader, this.#terrain.wireShader, this.#terrain.linesShader] : [this.panelShader];
     for ( const {uniforms} of shaders ) {
       uniforms.uImage = image;
       uniforms.uTint = look.tint;
@@ -922,12 +931,12 @@ export default class HoloRenderer {
       uniforms.uFlicker = this.#flicker;
     }
     if ( showTerrain ) {
-      const {surfaceShader, wireShader} = this.#terrain;
-      for ( const {uniforms} of [surfaceShader, wireShader] ) {
+      const {surfaceShader, wireShader, linesShader} = this.#terrain;
+      for ( const {uniforms} of [surfaceShader, wireShader, linesShader] ) {
         uniforms.uHeight = this.#heightmap;
         uniforms.uRelief = terrain.relief;
       }
-      surfaceShader.uniforms.uContours = terrain.contours;
+      surfaceShader.uniforms.uContours = linesShader.uniforms.uContours = terrain.contours;
       // A wireframe-only display always shows its wireframe, whatever the overlay setting.
       wireShader.uniforms.uWire = display.startsWith("wire") ? Math.max(terrain.wire, 0.6) : terrain.wire;
     }
@@ -966,11 +975,15 @@ export default class HoloRenderer {
   #applyDisplay(display) {
     const depth = (display === "wire") || (display === "solid");
     if ( this.#terrain ) {
-      const [surface, wire] = this.#terrain.meshes;
+      const [surface, wire, lines] = this.#terrain.meshes;
+      const wireOnly = display.startsWith("wire");
+      surface.visible &&= display !== "wireXray";
+      lines.visible &&= wireOnly;
       surface.state = depth ? this.depthWriteState : this.state;
       wire.state = depth ? this.depthReadState : this.state;
       this.#terrain.surfaceShader.uniforms.uOpaque = (display === "solid") ? 1 : 0;
-      this.#terrain.surfaceShader.uniforms.uLinesOnly = display.startsWith("wire") ? 1 : 0;
+      this.#terrain.surfaceShader.uniforms.uDepthOnly = (display === "wire") ? 1 : 0;
+      lines.state = depth ? this.depthReadState : this.state;
     }
     const tested = depth ? this.depthReadState : this.state;
     this.moteMesh.state = tested;
