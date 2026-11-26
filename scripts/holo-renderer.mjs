@@ -6,7 +6,10 @@ const FOCAL = 2.6;
 /** Camera distance at which the projector footprint fills FILL of the tile. */
 const BASE_DIST = 4.8;
 const FILL = 0.85;
-const MIN_DIST = 2.2;
+export const MIN_DIST = 2.2;
+export const MAX_DIST = 14;
+export const MIN_PITCH = 0.15;
+export const MAX_PITCH = Math.PI / 2;
 const MAX_RT_SIZE = 2048;
 const DISC_RADIUS = 1.08;
 /** One scanline per this many scene pixels of tile height. */
@@ -21,6 +24,7 @@ const CONTOUR_LEVELS = 12;
  */
 const PROJECT = `
 vec4 project(vec3 p) {
+  p.xz -= uTarget;
   float cy = cos(uCamera.x), sy = sin(uCamera.x), cp = cos(uCamera.y), sp = sin(uCamera.y);
   float x = p.x * cy + p.z * sy;
   float z1 = p.z * cy - p.x * sy;
@@ -37,10 +41,20 @@ const CAMERA_UNIFORMS = `
 uniform mat3 projectionMatrix;
 uniform mat3 translationMatrix;
 uniform vec4 uCamera; // yaw, pitch, distance, render-texture pixels per unit
+uniform vec2 uTarget; // floor point the camera looks at
 uniform vec2 uCenter;`;
 
+/** Fades content out towards the edge of the projection area, so panned or zoomed content never ends in a hard cut. */
+const VOLUME = `
+uniform vec3 uVolume; // render-texture width and height; z = 1 for a rectangular (sign) area, 0 for elliptical
+float volumeFade() {
+  vec2 q = abs((gl_FragCoord.xy / uVolume.xy) * 2.0 - 1.0);
+  float d = uVolume.z > 0.5 ? max(q.x, q.y) : length(q);
+  return 1.0 - smoothstep(0.88, 1.0, d);
+}`;
+
 /** Shared by the image panel and terrain: hologram colouring of the source image, scanlines and flicker. */
-const HOLO_LOOK = `
+const HOLO_LOOK = `${VOLUME}
 uniform sampler2D uImage;
 uniform vec3 uColor;
 uniform float uTint;
@@ -91,7 +105,7 @@ void main() {
   vec2 edge = min(vUV, 1.0 - vUV) * uPanelShape;
   float frame = smoothstep(0.012, 0.0, min(edge.x, edge.y));
   // Premultiplied output: alpha below brightness makes the hologram partly additive when composited.
-  gl_FragColor = vec4(holo.rgb + uColor * frame * 0.8 * uFlicker, holo.a * uSolidity + frame * 0.2);
+  gl_FragColor = vec4(holo.rgb + uColor * frame * 0.8 * uFlicker, holo.a * uSolidity + frame * 0.2) * volumeFade();
 }`;
 
 const DISC_FRAGMENT = `
@@ -159,7 +173,7 @@ void main() {
   float distToLevel = abs(fract(level + 0.5) - 0.5);
   float contour = (1.0 - smoothstep(0.0, 1.2 * fwidth(level), distToLevel)) * smoothstep(0.02, 0.05, vHeight);
   vec3 lines = uColor * contour * uContours * 0.9 * uFlicker * depth;
-  fragColor = vec4(holo.rgb + lines, holo.a * uSolidity);
+  fragColor = vec4(holo.rgb + lines, holo.a * uSolidity) * volumeFade();
 }`;
 
 const WIRE_FRAGMENT = `#version 300 es
@@ -170,12 +184,13 @@ uniform vec3 uColor;
 uniform float uOpacity;
 uniform float uFlicker;
 uniform float uWire;
+${VOLUME}
 out vec4 fragColor;
 
 void main() {
   float land = mix(0.15, 1.0, smoothstep(0.01, 0.05, vHeight));
   float depth = mix(1.0, 0.35, clamp((vDepth + 1.0) * 0.5, 0.0, 1.0));
-  float a = uWire * uOpacity * uFlicker * land * depth;
+  float a = uWire * uOpacity * uFlicker * land * depth * volumeFade();
   fragColor = vec4(uColor * (0.8 + 0.6 * vHeight) * a, a * 0.15);
 }`;
 
@@ -260,16 +275,20 @@ export default class HoloRenderer {
   constructor(tile) {
     this.tile = tile;
     this.renderTexture = PIXI.RenderTexture.create({width: 2, height: 2});
-    this.camera = new Float32Array(4);
-    this.center = new Float32Array(2);
+    this.cameraUniform = new Float32Array(4);
+    this.discCameraUniform = new Float32Array(4);
+    this.targetUniform = new Float32Array(2);
+    this.centerUniform = new Float32Array(2);
+    this.volumeUniform = new Float32Array(3);
     this.color = new Float32Array(3);
     this.state = new PIXI.State();
 
     const {panel, disc} = getPrograms();
     this.discGeometry = createQuad();
     setQuad(this.discGeometry, DISC_RADIUS, 0, DISC_RADIUS, [-1, 1, 1, 1, 1, -1, -1, -1]);
+    // The projector stays put on the floor: panning and zooming only move the content across and above it.
     this.discShader = new PIXI.Shader(disc, {
-      uCamera: this.camera, uCenter: this.center, uColor: this.color,
+      uCamera: this.discCameraUniform, uTarget: new Float32Array(2), uCenter: this.centerUniform, uColor: this.color,
       uOpacity: 1, uFlicker: 1, uDashPhase: 0
     });
     this.panelGeometry = createQuad();
@@ -281,6 +300,12 @@ export default class HoloRenderer {
     this.configure();
   }
 
+  /** Unsaved camera shown while someone drags the hologram (locally or on another client). */
+  #liveCamera = null;
+  #liveUntil = 0;
+  #dragging = false;
+  /** Yaw currently on screen, including auto-spin. */
+  displayYaw = 0;
   #flicker = 1;
   #flickerTarget = 1;
   #flickerTimer = 0;
@@ -293,7 +318,8 @@ export default class HoloRenderer {
 
   #lookUniforms(extra={}) {
     return {
-      uCamera: this.camera, uCenter: this.center, uColor: this.color, uImage: PIXI.Texture.EMPTY,
+      uCamera: this.cameraUniform, uTarget: this.targetUniform, uCenter: this.centerUniform, uColor: this.color,
+      uVolume: this.volumeUniform, uImage: PIXI.Texture.EMPTY,
       uTint: 0, uOpacity: 1, uSolidity: 1, uScan: 0, uScanDensity: 0, uScanPhase: 0, uFlicker: 1,
       ...extra
     };
@@ -303,6 +329,8 @@ export default class HoloRenderer {
   configure() {
     const data = getHoloData(this.tile.document);
     this.data = data;
+    // A saved change supersedes any live preview, except while this client is still dragging.
+    if ( !this.#dragging ) this.#liveCamera = null;
     this.color.set(new PIXI.Color(data.look.color).toRgbArray());
     this.resize();
     const src = (data.mode === "terrain") ? data.terrain.heightmap : null;
@@ -337,7 +365,7 @@ export default class HoloRenderer {
     const rt = this.renderTexture;
     const changed = (rt.width !== w) || (rt.height !== h);
     if ( changed ) rt.resize(w, h);
-    this.center.set([w / 2, h / 2]);
+    this.centerUniform.set([w / 2, h / 2]);
     this.scanDensity = (height / SCANLINE_SPACING) / h;
     return changed;
   }
@@ -375,6 +403,7 @@ export default class HoloRenderer {
       hx = aspect / diagonal;
       hz = 1 / diagonal;
     }
+    this.volumeUniform.set([rt.width, rt.height, fitRect ? 1 : 0]);
     const radiusPixels = (fitRect ? Math.max(rt.width, rt.height) : Math.min(rt.width, rt.height)) / 2;
     this.pixelsPerUnit = radiusPixels * FILL / (FOCAL / BASE_DIST);
 
@@ -421,12 +450,16 @@ export default class HoloRenderer {
    * @param {number} deltaMS
    */
   update(deltaMS) {
-    const {camera, look, terrain} = this.data;
+    const {look, terrain} = this.data;
+    if ( this.#liveCamera && !this.#dragging && (performance.now() > this.#liveUntil) ) this.#liveCamera = null;
+    const camera = this.camera;
     const seconds = game.time.serverTime / 1000;
-    const yaw = (camera.yaw + ((seconds * look.spin) % TAU)) % TAU;
-    const pitch = Math.clamp(camera.pitch, 0.15, Math.PI / 2);
-    const dist = Math.max(camera.dist, MIN_DIST);
-    this.camera.set([yaw, pitch, dist, this.pixelsPerUnit]);
+    this.displayYaw = (camera.yaw + this.spinPhase(look.spin)) % TAU;
+    const pitch = Math.clamp(camera.pitch, MIN_PITCH, MAX_PITCH);
+    const dist = Math.clamp(camera.dist, MIN_DIST, MAX_DIST);
+    this.cameraUniform.set([this.displayYaw, pitch, dist, this.pixelsPerUnit]);
+    this.discCameraUniform.set([this.displayYaw, pitch, BASE_DIST, this.pixelsPerUnit]);
+    this.targetUniform.set([camera.x, camera.z]);
 
     this.#flickerTimer -= deltaMS;
     if ( this.#flickerTimer <= 0 ) {
@@ -468,6 +501,39 @@ export default class HoloRenderer {
     disc.uOpacity = look.opacity;
     disc.uFlicker = this.#flicker;
     disc.uDashPhase = (seconds * 0.5) % 1;
+  }
+
+  /** The camera in effect: a live (unsaved) one while being dragged, otherwise the saved one. */
+  get camera() {
+    return this.#liveCamera ?? this.data.camera;
+  }
+
+  /**
+   * Show an unsaved camera until a saved change arrives or `hold` ms pass.
+   * @param {object} camera
+   * @param {number} [hold=5000]
+   */
+  setLiveCamera(camera, hold=5000) {
+    this.#liveCamera = {...this.data.camera, ...camera};
+    this.#liveUntil = performance.now() + hold;
+  }
+
+  /** While this client drags, keep its live camera even if other flag updates arrive. */
+  set dragging(value) {
+    this.#dragging = value;
+  }
+
+  /**
+   * Auto-spin offset added to the camera yaw, from the shared server clock.
+   * @param {number} spin   Radians per second
+   */
+  spinPhase(spin) {
+    return ((game.time.serverTime / 1000) * spin) % TAU;
+  }
+
+  /** Scene pixels covered by one footprint unit at the camera target, at the given camera distance. */
+  sceneUnitsPerUnit(dist) {
+    return this.pixelsPerUnit * (FOCAL / dist) * (this.tile.document.width / this.renderTexture.width);
   }
 
   /** @param {PIXI.Renderer} renderer */

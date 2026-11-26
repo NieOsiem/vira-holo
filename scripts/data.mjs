@@ -11,7 +11,12 @@ export const DEFAULTS = Object.freeze({
    * "text": sign text on a panel shaped like the tile.
    */
   mode: "image",
-  camera: {yaw: 0.6, pitch: 0.95, dist: 4.8},
+  /** Whether users who may drive the hologram can grab, orbit and zoom it on the canvas. */
+  interactive: true,
+  /** IDs of non-GM users who may drive the hologram. */
+  owners: [],
+  /** Orbit camera. x/z is the point on the floor it looks at, in footprint units (-1..1). */
+  camera: {yaw: 0.6, pitch: 0.95, dist: 4.8, x: 0, z: 0},
   look: {
     color: "#ff9f43",
     tint: 0.75,
@@ -44,7 +49,7 @@ export const DEFAULTS = Object.freeze({
 
 /** Defaults that differ per mode: signs face the viewer, hold still and have no projector disc. */
 const MODE_DEFAULTS = Object.freeze({
-  text: {camera: {yaw: 0, pitch: Math.PI / 2}, look: {spin: 0, projector: false}}
+  text: {interactive: false, camera: {yaw: 0, pitch: Math.PI / 2}, look: {spin: 0, projector: false}}
 });
 
 /**
@@ -57,4 +62,14 @@ export function getHoloData(doc) {
   const data = foundry.utils.deepClone(DEFAULTS);
   foundry.utils.mergeObject(data, MODE_DEFAULTS[flags.mode ?? data.mode] ?? {});
   return foundry.utils.mergeObject(data, flags);
+}
+
+/**
+ * Can this user drive (orbit, zoom, pan) the hologram on this tile?
+ * @param {User} user
+ * @param {TileDocument} doc
+ */
+export function canDrive(user, doc) {
+  if ( !user ) return false;
+  return user.isGM || !!doc.getFlag(MODULE_ID, "owners")?.includes(user.id);
 }

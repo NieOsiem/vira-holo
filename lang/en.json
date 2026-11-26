@@ -1,5 +1,6 @@
 {
   "VIRAHOLO": {
-    "Title": "Vira Holo"
+    "Title": "Vira Holo",
+    "NoActiveGM": "No GM is connected, so the hologram's new view can't be saved."
   }
 }

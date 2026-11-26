@@ -1,6 +1,11 @@
 // Vira Holo — holographic projections of maps, images, and text.
 import {registerTileHooks} from "./scripts/tile-holo.mjs";
+import {registerInteraction} from "./scripts/interaction.mjs";
+import {registerSocket} from "./scripts/socket.mjs";
 
 Hooks.once("init", () => {
   registerTileHooks();
+  registerInteraction();
 });
+
+Hooks.once("ready", registerSocket);

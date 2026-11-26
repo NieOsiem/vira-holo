@@ -10,6 +10,11 @@ const holograms = new Map();
  */
 const SOLID_ALPHA = Object.freeze({data: new Uint8Array([255]), width: 1, height: 1, minX: 0, minY: 0, maxX: 1, maxY: 1});
 
+/** @returns {Map<Tile, HoloRenderer>} Holograms on the current canvas */
+export function getHolograms() {
+  return holograms;
+}
+
 export function registerTileHooks() {
   Hooks.on("drawTile", syncTile);
   Hooks.on("refreshTile", onRefreshTile);
