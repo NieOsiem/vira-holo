@@ -1,5 +1,6 @@
-import {MODULE_ID, defaultCamera, getHoloData} from "./data.mjs";
+import {LINK_SECTIONS, MODULE_ID, defaultCamera, getHoloData} from "./data.mjs";
 import {editMarkers} from "./annotations.mjs";
+import {createLink, joinLink, leaveLink, linkChoices, writeHolo} from "./links.mjs";
 
 const {HandlebarsApplicationMixin, DocumentSheetV2} = foundry.applications.api;
 
@@ -11,8 +12,10 @@ const SLIDERS = {
     ["solidity", 0, 1, 0.05],
     ["scanlines", 0, 1, 0.05],
     ["flicker", 0, 1, 0.05],
-    ["spin", -0.5, 0.5, 0.01],
     ["lift", 0, 0.5, 0.01]
+  ],
+  camera: [
+    ["spin", -0.5, 0.5, 0.01]
   ],
   terrain: [
     ["relief", 0, 1.5, 0.05],
@@ -31,7 +34,14 @@ export default class HoloConfig extends HandlebarsApplicationMixin(DocumentSheet
     position: {width: 480, height: "auto"},
     window: {icon: "fa-solid fa-cube", contentClasses: ["standard-form"]},
     form: {submitOnChange: true, closeOnSubmit: false},
-    actions: {resetView: HoloConfig.#onResetView, clearMarkers: HoloConfig.#onClearMarkers}
+    actions: {
+      resetView: HoloConfig.#onResetView,
+      clearMarkers: HoloConfig.#onClearMarkers,
+      createLink: HoloConfig.#onCreateLink,
+      joinLink: HoloConfig.#onJoinLink,
+      leaveLink: HoloConfig.#onLeaveLink,
+      openLink: HoloConfig.#onOpenLink
+    }
   };
 
   static PARTS = {
@@ -50,11 +60,15 @@ export default class HoloConfig extends HandlebarsApplicationMixin(DocumentSheet
 
   /** @override */
   get title() {
-    const {name, texture, id} = this.document;
-    const file = texture.src?.split("/").pop();
-    const firstLine = getHoloData(this.document).text.content.trim().split("\n")[0].slice(0, 40);
-    const label = name || (file && decodeURIComponent(file)) || firstLine || id;
-    return game.i18n.format("VIRAHOLO.Config.Title", {name: label});
+    return game.i18n.format("VIRAHOLO.Config.Title", {name: this.#label});
+  }
+
+  /** A readable name for the hologram: the tile's name, its image's file name, or the first line of its text. */
+  get #label() {
+    const data = getHoloData(this.document);
+    const file = data.image?.split("/").pop();
+    const firstLine = data.text.content.trim().split("\n")[0].slice(0, 40);
+    return this.document.name || (file && decodeURIComponent(file)) || firstLine || this.document.id;
   }
 
   /** @override */
@@ -69,10 +83,15 @@ export default class HoloConfig extends HandlebarsApplicationMixin(DocumentSheet
       label: localize(`VIRAHOLO.Config.${section}.${key}`)
     }));
     const FontConfig = foundry.applications.settings?.menus?.FontConfig ?? globalThis.FontConfig;
+    const choices = linkChoices();
     return Object.assign(context, {
       holo,
       flags: `flags.${MODULE_ID}`,
-      image: this.document.texture.src ?? "",
+      linkChoices: choices,
+      hasLinks: !foundry.utils.isEmpty(choices),
+      shareOptions: Object.keys(LINK_SECTIONS).map(section => ({
+        section, checked: holo.link?.share[section], label: localize(`VIRAHOLO.Link.Share.${section}`)
+      })),
       isImage: holo.mode === "image",
       isTerrain: holo.mode === "terrain",
       isText: holo.mode === "text",
@@ -81,6 +100,7 @@ export default class HoloConfig extends HandlebarsApplicationMixin(DocumentSheet
       aligns: Object.fromEntries(["left", "center", "right"].map(a => [a, localize(`VIRAHOLO.Config.text.${a}`)])),
       lookSliders: sliders("look"),
       terrainSliders: sliders("terrain"),
+      cameraSliders: sliders("camera"),
       markerCount: holo.annotations.markers.length,
       players: game.users.filter(u => !u.isGM).map(u => ({id: u.id, name: u.name, owner: holo.owners.includes(u.id)}))
     });
@@ -93,10 +113,7 @@ export default class HoloConfig extends HandlebarsApplicationMixin(DocumentSheet
    */
   _processFormData(event, form, formData) {
     const submitted = foundry.utils.flattenObject(super._processFormData(event, form, formData));
-    const current = foundry.utils.flattenObject({
-      flags: {[MODULE_ID]: getHoloData(this.document)},
-      texture: {src: this.document.texture.src ?? ""}
-    });
+    const current = foundry.utils.flattenObject({flags: {[MODULE_ID]: getHoloData(this.document)}});
     // v14 renamed objectsEqual to equals (which also compares primitives and arrays).
     const equals = foundry.utils.equals ?? ((a, b) => foundry.utils.objectsEqual({v: a}, {v: b}));
     const changes = {};
@@ -104,6 +121,33 @@ export default class HoloConfig extends HandlebarsApplicationMixin(DocumentSheet
       if ( !equals(value, current[key]) ) changes[key] = value;
     }
     return foundry.utils.expandObject(changes);
+  }
+
+  /**
+   * Save each change where it lives: shared sections in the link's journal, the rest on the tile.
+   * @override
+   */
+  async _processSubmitData(event, form, submitData) {
+    const changes = submitData.flags?.[MODULE_ID];
+    if ( changes && !foundry.utils.isEmpty(changes) ) await writeHolo(this.document, changes);
+    return {};
+  }
+
+  static async #onCreateLink() {
+    await createLink(this.document, this.#label);
+  }
+
+  static async #onJoinLink() {
+    const uuid = this.element.querySelector("[data-link-choice]")?.value;
+    if ( uuid ) await joinLink(this.document, uuid);
+  }
+
+  static async #onLeaveLink() {
+    await leaveLink(this.document);
+  }
+
+  static #onOpenLink() {
+    fromUuidSync(getHoloData(this.document).link?.uuid)?.sheet.render(true);
   }
 
   static async #onClearMarkers() {
@@ -122,6 +166,12 @@ export default class HoloConfig extends HandlebarsApplicationMixin(DocumentSheet
 
 /** Ways to open the settings: a button in the Tile HUD and in the Tile config header (GMs only). */
 export function registerConfigHooks() {
+  // Shared settings live in the link's journal; keep open windows of linked tiles current.
+  Hooks.on("updateJournalEntry", journal => {
+    for ( const app of foundry.applications.instances.values() ) {
+      if ( (app instanceof HoloConfig) && (getHoloData(app.document).link?.uuid === journal.uuid) ) app.render();
+    }
+  });
   Hooks.on("renderTileHUD", (hud, html) => {
     if ( !game.user.isGM ) return;
     const root = (html instanceof HTMLElement) ? html : html[0];

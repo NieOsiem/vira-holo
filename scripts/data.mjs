@@ -11,12 +11,17 @@ export const DEFAULTS = Object.freeze({
    * "text": sign text on a panel shaped like the tile.
    */
   mode: "image",
+  /** The projected image. For an unlinked tile this is the tile's own image (texture.src), not a flag. */
+  image: "",
   /** Whether users who may drive the hologram can grab, orbit and zoom it on the canvas. */
   interactive: true,
   /** IDs of non-GM users who may drive the hologram. */
   owners: [],
-  /** Orbit camera. x/z is the point on the floor it looks at, in footprint units (-1..1). */
-  camera: {yaw: 0.6, pitch: 0.95, dist: 4.8, x: 0, z: 0},
+  /**
+   * Orbit camera. x/z is the point on the floor it looks at, in footprint units (-1..1); spin is auto-rotation in
+   * radians per second, added to yaw from the shared server clock.
+   */
+  camera: {yaw: 0.6, pitch: 0.95, dist: 4.8, x: 0, z: 0, spin: 0.08},
   look: {
     color: "#ff9f43",
     tint: 0.75,
@@ -24,7 +29,6 @@ export const DEFAULTS = Object.freeze({
     solidity: 0.35,
     scanlines: 0.5,
     flicker: 0.3,
-    spin: 0.08,
     lift: 0.12,
     /** Show the projector disc under the hologram. */
     projector: true,
@@ -40,7 +44,10 @@ export const DEFAULTS = Object.freeze({
     contours: 0.5
   },
   annotations: {
-    /** Waypoints: {id, u, v, label, glyph, color}; u/v is the position on the image (0..1, top-left origin). */
+    /**
+     * Waypoints: {id, u, v, label, glyph, color, size, locked}. u/v is the position on the image (0..1, top-left
+     * origin); size is a tier from 1 (small) to 3 (large); locked pins can't be dragged.
+     */
     markers: []
   },
   text: {
@@ -55,19 +62,79 @@ export const DEFAULTS = Object.freeze({
 
 /** Defaults that differ per mode: signs face the viewer, hold still and have no projector disc. */
 const MODE_DEFAULTS = Object.freeze({
-  text: {interactive: false, camera: {yaw: 0, pitch: Math.PI / 2}, look: {spin: 0, projector: false}}
+  text: {interactive: false, camera: {yaw: 0, pitch: Math.PI / 2, spin: 0}, look: {projector: false}}
 });
 
 /**
- * The effective hologram state of a Tile document: defaults overlaid with its flags.
+ * What a link can share, by section, and the top-level keys of the hologram data each section covers.
+ * Never shared: enabled, interactive, owners and the tile's placement.
+ */
+export const LINK_SECTIONS = Object.freeze({
+  content: ["mode", "image", "terrain", "text"],
+  annotations: ["annotations"],
+  view: ["camera"],
+  look: ["look"]
+});
+export const DEFAULT_SHARE = Object.freeze({content: true, annotations: true, view: false, look: true});
+
+/** @returns {string|undefined} The link section a top-level hologram key belongs to */
+export function sectionOf(key) {
+  return Object.keys(LINK_SECTIONS).find(section => LINK_SECTIONS[section].includes(key));
+}
+
+/**
+ * The link a tile follows: its JournalEntry and what it shares. A link stores its shared state in the journal's
+ * `flags.vira-holo.state`, in the same shape as the hologram data.
+ * @param {TileDocument} doc
+ * @returns {{journal: JournalEntry, share: Record<string, boolean>}|null}   Null if unlinked or the journal is gone
+ */
+export function getLink(doc) {
+  const ref = doc.flags?.[MODULE_ID]?.link;
+  if ( !ref?.uuid ) return null;
+  const journal = fromUuidSync(ref.uuid, {strict: false});
+  if ( !journal?.getFlag(MODULE_ID, "state") ) return null;
+  return {journal, share: {...DEFAULT_SHARE, ...ref.share}};
+}
+
+/**
+ * The effective hologram state of a Tile document: defaults, then the mode's defaults, then the tile's flags, with
+ * every section shared through a link taken from the link instead.
  * @param {TileDocument} doc
  * @returns {object}
  */
 export function getHoloData(doc) {
-  const flags = doc.flags?.[MODULE_ID] ?? {};
+  const source = foundry.utils.deepClone(doc.flags?.[MODULE_ID] ?? {});
+  source.image = doc.texture?.src ?? "";
+  delete source.link;
+  const link = getLink(doc);
+  if ( link ) {
+    const state = link.journal.getFlag(MODULE_ID, "state");
+    for ( const [section, keys] of Object.entries(LINK_SECTIONS) ) {
+      if ( !link.share[section] ) continue;
+      for ( const key of keys ) {
+        delete source[key];
+        if ( state[key] !== undefined ) source[key] = foundry.utils.deepClone(state[key]);
+      }
+    }
+  }
   const data = foundry.utils.deepClone(DEFAULTS);
-  foundry.utils.mergeObject(data, MODE_DEFAULTS[flags.mode ?? data.mode] ?? {});
-  return foundry.utils.mergeObject(data, flags);
+  foundry.utils.mergeObject(data, MODE_DEFAULTS[source.mode ?? data.mode] ?? {});
+  foundry.utils.mergeObject(data, source);
+  data.link = link ? {uuid: link.journal.uuid, name: link.journal.name, share: link.share} : null;
+  data.linkMissing = !link && !!doc.flags?.[MODULE_ID]?.link?.uuid;
+  return data;
+}
+
+/**
+ * An update that removes a key: v14 deprecates the "-=key" syntax in favour of ForcedDeletion.
+ * @param {string} path   e.g. "flags.vira-holo.link"
+ */
+export function deletionUpdate(path) {
+  const ForcedDeletion = foundry.data.operators?.ForcedDeletion;
+  if ( ForcedDeletion ) return {[path]: new ForcedDeletion()};
+  const parts = path.split(".");
+  const key = parts.pop();
+  return {[[...parts, `-=${key}`].join(".")]: null};
 }
 
 /**
@@ -94,6 +161,8 @@ export const INKS = Object.freeze(["#ffb020", "#ff7a1a", "#ffe066", "#ff4d5e", "
 export const MARKER_GLYPHS = Object.freeze(["diamond", "triangle", "circle", "square"]);
 export const MAX_MARKERS = 64;
 export const MAX_LABEL_LENGTH = 32;
+/** Pin size tiers: tier → scale of the largest pin. */
+export const MARKER_SIZES = Object.freeze({1: 0.5, 2: 0.72, 3: 1});
 
 /**
  * The ink that stands out most against a hologram colour (largest hue difference), for new waypoints.
@@ -122,7 +191,7 @@ export function contrastingInk(color) {
  * @returns {object|null}   Null when it has no usable position or ID
  */
 export function sanitizeMarker(marker) {
-  const {id, u, v, label, glyph, color} = marker ?? {};
+  const {id, u, v, label, glyph, color, size, locked} = marker ?? {};
   if ( (typeof id !== "string") || !/^[a-zA-Z0-9]{16}$/.test(id) ) return null;
   if ( !Number.isFinite(u) || !Number.isFinite(v) ) return null;
   return {
@@ -131,6 +200,8 @@ export function sanitizeMarker(marker) {
     v: Math.clamp(v, 0, 1),
     label: String(label ?? "").slice(0, MAX_LABEL_LENGTH),
     glyph: MARKER_GLYPHS.includes(glyph) ? glyph : MARKER_GLYPHS[0],
-    color: /^#[0-9a-f]{6}$/i.test(color) ? color : INKS[0]
+    color: /^#[0-9a-f]{6}$/i.test(color) ? color : INKS[0],
+    size: (size in MARKER_SIZES) ? Number(size) : 3,
+    locked: locked === true
   };
 }

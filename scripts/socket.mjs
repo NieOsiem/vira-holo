@@ -1,9 +1,10 @@
 import {MODULE_ID, canDrive} from "./data.mjs";
 import {applyMarkerEdit} from "./annotations.mjs";
-import {getHolograms} from "./tile-holo.mjs";
+import {writeHolo} from "./links.mjs";
+import {showLiveCamera} from "./tile-holo.mjs";
 
 const EVENT = `module.${MODULE_ID}`;
-const CAMERA_KEYS = ["yaw", "pitch", "dist", "x", "z"];
+const CAMERA_KEYS = ["yaw", "pitch", "dist", "x", "z", "spin"];
 const TAU = Math.PI * 2;
 
 export function registerSocket() {
@@ -43,44 +44,41 @@ export function broadcastCamera(doc, camera) {
 }
 
 /**
- * Save what a driver changed (camera and auto-spin). GMs write directly; owners ask the active GM to write it.
+ * Save what a driver changed (the camera, including auto-spin). GMs write directly; owners ask the active GM.
  * @param {TileDocument} doc
- * @param {{camera?: object, spin?: number}} changes
+ * @param {{camera: object}} changes
  */
 export function saveDriverChanges(doc, changes) {
-  const update = sanitize(changes);
-  if ( game.user.isGM ) return doc.update({[`flags.${MODULE_ID}`]: update});
+  if ( game.user.isGM ) return writeHolo(doc, sanitize(changes));
   const gm = activeGM();
   if ( !gm ) return;
   game.socket.emit(EVENT, {action: "save", uuid: doc.uuid, changes}, {recipients: [gm.id]});
 }
 
 function onCamera({uuid, camera}, sender) {
-  const doc = fromUuidSync(uuid);
-  if ( !doc?.object || !canDrive(sender, doc) ) return;
-  getHolograms().get(doc.object)?.setLiveCamera(pickCamera(camera));
+  const doc = fromUuidSync(uuid, {strict: false});
+  // The driven tile may be on another scene and still move a linked hologram on this one.
+  if ( !doc || !canDrive(sender, doc) ) return;
+  showLiveCamera(doc, pickCamera(camera));
 }
 
 function onSave({uuid, changes}, sender) {
   if ( game.user !== game.users.activeGM ) return;
-  const doc = fromUuidSync(uuid);
+  const doc = fromUuidSync(uuid, {strict: false});
   if ( !doc || !canDrive(sender, doc) ) return;
-  doc.update({[`flags.${MODULE_ID}`]: sanitize(changes)});
+  writeHolo(doc, sanitize(changes));
 }
 
 function onMarkers({uuid, edit}, sender) {
   if ( game.user !== game.users.activeGM ) return;
-  const doc = fromUuidSync(uuid);
+  const doc = fromUuidSync(uuid, {strict: false});
   if ( !doc || !canDrive(sender, doc) || (typeof edit !== "object") ) return;
   applyMarkerEdit(doc, edit); // Every field is sanitized there
 }
 
 /** Only the fields a driver may change, and only as finite numbers. */
-function sanitize({camera, spin}={}) {
-  const update = {};
-  if ( camera ) update.camera = pickCamera(camera);
-  if ( Number.isFinite(spin) ) update.look = {spin};
-  return update;
+function sanitize({camera}={}) {
+  return camera ? {camera: pickCamera(camera)} : {};
 }
 
 function pickCamera(camera={}) {

@@ -4,7 +4,7 @@ import HoloConfig from "./holo-config.mjs";
 import {MAX_DIST, MAX_PITCH, MIN_DIST, MIN_PITCH} from "./holo-renderer.mjs";
 import {closeCard, isCardEvent, openCard, updateCard} from "./pin-card.mjs";
 import {hideRing, isRingEvent, refreshRing, setGlyphOn, showRing} from "./ring.mjs";
-import {getHolograms} from "./tile-holo.mjs";
+import {getHolograms, showLiveCamera} from "./tile-holo.mjs";
 import {broadcastCamera, saveDriverChanges} from "./socket.mjs";
 
 /** Radians of yaw / pitch per screen pixel dragged. */
@@ -18,8 +18,9 @@ const DOUBLE_CLICK_MS = 350;
 const CLICK_SLOP = 4;
 
 /**
- * @type {{tile: Tile, holo: HoloRenderer, pointerId: number, pan: boolean, marker: string|null, x: number,
- *         y: number, start: object, camera: object, position: object|null, moved: boolean, lastSent: number}|null}
+ * @type {{tile: Tile, holo: HoloRenderer, pointerId: number, pan: boolean, pressed: string|null,
+ *         marker: string|null, x: number, y: number, start: object, camera: object, position: object|null,
+ *         moved: boolean, lastSent: number}|null}
  */
 let drag = null;
 /**
@@ -44,6 +45,7 @@ export function registerInteraction() {
   window.addEventListener("wheel", onWheel, {capture: true, passive: false});
   Hooks.on("refreshTile", tile => refreshRing(tile));
   Hooks.on("updateTile", doc => refreshRing(doc.object));
+  Hooks.on("updateJournalEntry", () => refreshRing());
   Hooks.on("destroyTile", tile => {
     if ( tile === engaged ) setEngaged(null);
   });
@@ -138,11 +140,15 @@ function onPointerDown(event) {
   if ( document.activeElement instanceof HTMLElement ) document.activeElement.blur();
   const {tile, holo} = hit;
   holo.dragging = true;
+  // A pressed pin opens its card on click; it's only dragged when unlocked (a locked pin lets the drag orbit).
+  const pressed = holo.markerAt(holo.toTexturePoint(canvasPoint(event)));
+  const locked = !!holo.markers.find(m => m.id === pressed)?.locked;
   drag = {
     tile, holo,
     pointerId: event.pointerId,
     pan: event.shiftKey,
-    marker: holo.markerAt(holo.toTexturePoint(canvasPoint(event))),
+    pressed,
+    marker: locked ? null : pressed,
     x: event.clientX,
     y: event.clientY,
     start: {...holo.camera},
@@ -177,7 +183,7 @@ function onPointerMove(event) {
     camera.yaw = start.yaw - (dx * ORBIT_SPEED);
     camera.pitch = Math.clamp(start.pitch + (dy * PITCH_SPEED), MIN_PITCH, MAX_PITCH);
   }
-  holo.setLiveCamera(camera);
+  showLiveCamera(drag.tile.document, camera);
   const now = performance.now();
   if ( now - drag.lastSent >= BROADCAST_INTERVAL ) {
     drag.lastSent = now;
@@ -188,13 +194,13 @@ function onPointerMove(event) {
 function onPointerUp(event) {
   if ( !drag || (event.pointerId !== drag.pointerId) ) return;
   swallow(event);
-  const {tile, holo, camera, moved, marker, position} = drag;
+  const {tile, holo, camera, moved, pressed, marker, position} = drag;
   drag = null;
   holo.dragging = false;
   if ( tile.destroyed ) return; // Deleted, or the scene changed, mid-drag
 
+  if ( pressed && !moved ) return openMarkerCard(tile, holo, pressed);
   if ( marker ) {
-    if ( !moved ) return openMarkerCard(tile, holo, marker);
     if ( position ) editMarkers(tile.document, {type: "update", id: marker, changes: position});
     return;
   }
@@ -233,7 +239,7 @@ function openMarkerCard(tile, holo, id) {
       const marker = holo.markers.find(m => m.id === id);
       if ( !marker ) return;
       const camera = {...holo.camera, ...holo.surfaceTarget(marker.u, marker.v)};
-      holo.setLiveCamera(camera);
+      showLiveCamera(tile.document, camera);
       broadcastCamera(tile.document, camera);
       saveDriverChanges(tile.document, {camera});
     }
@@ -259,21 +265,21 @@ function panCamera(tile, holo, start, dx, dy) {
 
 /** Go back to the mode's starting view. */
 function recenter(tile, holo) {
-  const camera = defaultCamera(holo.data.mode);
-  holo.setLiveCamera(camera);
+  const camera = {...defaultCamera(holo.data.mode), spin: holo.camera.spin};
+  showLiveCamera(tile.document, camera);
   broadcastCamera(tile.document, camera);
   saveDriverChanges(tile.document, {camera});
 }
 
 /** Stop or restart auto-spin, keeping the hologram where it currently is on screen. */
 function toggleSpin(tile, holo) {
-  const {look} = holo.data;
-  const spin = look.spin ? 0 : (DEFAULTS.look.spin || 0.08);
-  const yaw = (holo.camera.yaw + holo.spinPhase(look.spin) - holo.spinPhase(spin));
-  const camera = {...holo.camera, yaw};
-  holo.setLiveCamera(camera);
+  const current = holo.camera;
+  const spin = current.spin ? 0 : DEFAULTS.camera.spin;
+  const yaw = current.yaw + holo.spinPhase(current.spin) - holo.spinPhase(spin);
+  const camera = {...current, yaw, spin};
+  showLiveCamera(tile.document, camera);
   broadcastCamera(tile.document, camera);
-  saveDriverChanges(tile.document, {camera, spin});
+  saveDriverChanges(tile.document, {camera});
 }
 
 function onWheel(event) {
@@ -284,7 +290,7 @@ function onWheel(event) {
   const {tile, holo} = hit;
   const camera = {...holo.camera};
   camera.dist = Math.clamp(camera.dist * (ZOOM_STEP ** Math.sign(event.deltaY)), MIN_DIST, MAX_DIST);
-  holo.setLiveCamera(camera);
+  showLiveCamera(tile.document, camera);
   holo.dragging = true; // Hold the live zoom until it's saved
   broadcastCamera(tile.document, camera);
   clearTimeout(wheelSave);

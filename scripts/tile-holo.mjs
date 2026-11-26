@@ -1,4 +1,4 @@
-import {MODULE_ID} from "./data.mjs";
+import {MODULE_ID, getLink} from "./data.mjs";
 import HoloRenderer from "./holo-renderer.mjs";
 
 /** @type {Map<Tile, HoloRenderer>} */
@@ -15,7 +15,31 @@ export function getHolograms() {
   return holograms;
 }
 
+/**
+ * Show an unsaved camera on a tile's hologram and on every hologram that shares its view through the same link.
+ * @param {TileDocument} doc
+ * @param {object} camera
+ */
+export function showLiveCamera(doc, camera) {
+  const link = getLink(doc);
+  const viewLink = link?.share.view ? link.journal.uuid : null;
+  for ( const [tile, holo] of holograms ) {
+    const sibling = viewLink && (holo.data.link?.uuid === viewLink) && holo.data.link.share.view;
+    if ( (tile.document === doc) || sibling ) holo.setLiveCamera(camera);
+  }
+}
+
+/** Re-read holograms whose link journal was created, changed or deleted. */
+function onLinkChanged(journal) {
+  for ( const tile of holograms.keys() ) {
+    if ( tile.document.flags[MODULE_ID]?.link?.uuid === journal.uuid ) syncTile(tile);
+  }
+}
+
 export function registerTileHooks() {
+  Hooks.on("createJournalEntry", onLinkChanged);
+  Hooks.on("updateJournalEntry", onLinkChanged);
+  Hooks.on("deleteJournalEntry", onLinkChanged);
   Hooks.on("drawTile", syncTile);
   Hooks.on("refreshTile", onRefreshTile);
   Hooks.on("destroyTile", tile => detach(tile, {restore: false}));

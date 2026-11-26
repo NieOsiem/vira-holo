@@ -80,7 +80,7 @@ export function refreshRing(tile) {
   if ( tile.destroyed || !tile.visible || !hud ) return hideRing();
   if ( !element.isConnected ) hud.append(element);
 
-  const {look} = getHoloData(tile.document);
+  const {look, camera} = getHoloData(tile.document);
   const {width, height, rotation} = tile.document;
   const {x: cx, y: cy} = tile.center;
   const size = Math.clamp(Math.min(width, height) * 0.085, 28, 110);
@@ -95,8 +95,8 @@ export function refreshRing(tile) {
     button.style.left = `${cx + (x * Math.cos(turn)) - (y * Math.sin(turn)) - (size / 2)}px`;
     button.style.top = `${cy + (x * Math.sin(turn)) + (y * Math.cos(turn)) - (size / 2)}px`;
     if ( button.dataset.glyph === "spin" ) {
-      button.classList.toggle("on", look.spin !== 0);
-      button.setAttribute("aria-pressed", String(look.spin !== 0));
+      button.classList.toggle("on", camera.spin !== 0);
+      button.setAttribute("aria-pressed", String(camera.spin !== 0));
     }
   });
 }

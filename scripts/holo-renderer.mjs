@@ -346,6 +346,8 @@ export default class HoloRenderer {
   #heightmap = null;
   /** @type {TextPanel|null} */
   #textPanel = null;
+  #linkedImageSrc = null;
+  #linkedImage = null;
   /** CPU copy of the heightmap: {width, height, data: Float32Array}. */
   #heights = null;
   #hx = 1;
@@ -377,6 +379,8 @@ export default class HoloRenderer {
     this.resize();
     const src = (data.mode === "terrain") ? data.terrain.heightmap : null;
     if ( src !== this.#heightmapSrc ) this.#loadHeightmap(src);
+    const linkedSrc = data.link?.share.content ? data.image : null;
+    if ( linkedSrc !== this.#linkedImageSrc ) this.#loadLinkedImage(linkedSrc);
     if ( data.mode === "text" ) {
       this.#textPanel ??= new TextPanel();
       const {width, height} = this.tile.document;
@@ -392,7 +396,18 @@ export default class HoloRenderer {
   /** The texture shown on the panel or draped over the terrain. */
   get #image() {
     if ( this.#textPanel ) return this.#textPanel.texture;
+    if ( this.data.link?.share.content ) return this.#linkedImage ?? PIXI.Texture.EMPTY;
     return this.tile.texture ?? PIXI.Texture.EMPTY;
+  }
+
+  /** A linked tile shows the link's image rather than its own; it is loaded here instead of by Foundry's Tile. */
+  async #loadLinkedImage(src) {
+    this.#linkedImageSrc = src;
+    this.#linkedImage = null;
+    if ( !src ) return;
+    const loadTexture = foundry.canvas.loadTexture ?? globalThis.loadTexture;
+    const texture = await loadTexture(src);
+    if ( this.#linkedImageSrc === src ) this.#linkedImage = texture;
   }
 
   /**
@@ -519,7 +534,7 @@ export default class HoloRenderer {
     if ( this.#liveCamera && !this.#dragging && (performance.now() > this.#liveUntil) ) this.#liveCamera = null;
     const camera = this.camera;
     const seconds = game.time.serverTime / 1000;
-    this.displayYaw = (camera.yaw + this.spinPhase(look.spin)) % TAU;
+    this.displayYaw = (camera.yaw + this.spinPhase(camera.spin)) % TAU;
     const pitch = Math.clamp(camera.pitch, MIN_PITCH, MAX_PITCH);
     const dist = Math.clamp(camera.dist, MIN_DIST, MAX_DIST);
     this.cameraUniform.set([this.displayYaw, pitch, dist, this.pixelsPerUnit]);
@@ -534,8 +549,9 @@ export default class HoloRenderer {
     }
     this.#flicker += (this.#flickerTarget - this.#flicker) * 0.35;
 
-    // The heightmap is owned by Foundry's texture cache; if it was ever evicted, load it again.
+    // Heightmaps and linked images are owned by Foundry's texture cache; if one was ever evicted, load it again.
     if ( this.#heightmap?.baseTexture?.destroyed ) this.#loadHeightmap(this.#heightmapSrc);
+    if ( this.#linkedImage?.baseTexture?.destroyed ) this.#loadLinkedImage(this.#linkedImageSrc);
     const showTerrain = !!(this.#terrain && this.#heightmap);
     this.panelMesh.visible = !showTerrain;
     if ( this.#terrain ) for ( const mesh of this.#terrain.meshes ) mesh.visible = showTerrain;
@@ -798,6 +814,7 @@ export default class HoloRenderer {
 
   destroy() {
     this.#heightmapSrc = null;
+    this.#linkedImageSrc = null;
     this.#textPanel?.destroy();
     this.#destroyTerrain();
     this.markerLayer.destroy();

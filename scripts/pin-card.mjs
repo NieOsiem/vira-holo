@@ -1,4 +1,4 @@
-import {INKS, MARKER_GLYPHS, MAX_LABEL_LENGTH} from "./data.mjs";
+import {INKS, MARKER_GLYPHS, MARKER_SIZES, MAX_LABEL_LENGTH} from "./data.mjs";
 
 const GLYPH_CHARACTERS = {diamond: "◆", triangle: "▲", circle: "●", square: "■"};
 /** How long a freshly placed waypoint may take to arrive from the GM before its card gives up. */
@@ -35,14 +35,18 @@ export function openCard(tile, holo, id, actions) {
       aria-label="${localize("Label")}">
     <div class="glyphs">${MARKER_GLYPHS.map(glyph => `<button type="button" data-glyph="${glyph}"
       aria-label="${localize(`Glyph.${glyph}`)}" data-tooltip="${localize(`Glyph.${glyph}`)}">${GLYPH_CHARACTERS[glyph]}</button>`).join("")}</div>
+    <div class="sizes">${Object.keys(MARKER_SIZES).map(size => `<button type="button" data-size="${size}"
+      aria-label="${localize(`Size.${size}`)}" data-tooltip="${localize(`Size.${size}`)}">${localize(`SizeShort.${size}`)}</button>`).join("")}</div>
     <div class="inks">${INKS.map(color => `<button type="button" data-ink="${color}" style="--ink: ${color}"
       aria-label="${color}"></button>`).join("")}<input type="color" class="custom" aria-label="${localize("CustomInk")}"
       data-tooltip="${localize("CustomInk")}"></div>
     <div class="actions">
+      <button type="button" class="lock" aria-label="${localize("Lock")}" data-tooltip="${localize("Lock")}">
+        <i class="fa-solid fa-lock-open" inert></i></button>
       <button type="button" class="focus">${localize("Focus")}</button>
       <button type="button" class="delete">${localize("Delete")}</button>
     </div>
-    <p class="hint">${localize("Hint")}</p>`;
+    <p class="hint"></p>`;
   document.body.append(element);
   card = {element, tile, holo, id, actions, pendingUntil: performance.now() + PENDING_MS, shown: ""};
   holo.selectedMarker = id;
@@ -61,6 +65,11 @@ export function openCard(tile, holo, id, actions) {
   for ( const button of element.querySelectorAll("[data-ink]") ) {
     button.addEventListener("click", () => actions.update({color: button.dataset.ink}));
   }
+  for ( const button of element.querySelectorAll("[data-size]") ) {
+    button.addEventListener("click", () => actions.update({size: Number(button.dataset.size)}));
+  }
+  const lock = element.querySelector(".lock");
+  lock.addEventListener("click", () => actions.update({locked: !lock.classList.contains("on")}));
   const custom = element.querySelector(".custom");
   custom.addEventListener("change", () => actions.update({color: custom.value}));
   element.querySelector(".focus").addEventListener("click", () => actions.focus());
@@ -114,8 +123,16 @@ export function updateCard() {
   for ( const button of element.querySelectorAll("[data-glyph]") ) {
     button.classList.toggle("on", button.dataset.glyph === marker.glyph);
   }
+  element.querySelector(".hint").textContent = game.i18n.localize(`VIRAHOLO.Card.${marker.locked ? "HintLocked" : "Hint"}`);
   for ( const button of element.querySelectorAll("[data-ink]") ) {
     button.classList.toggle("on", button.dataset.ink.toLowerCase() === marker.color.toLowerCase());
   }
+  for ( const button of element.querySelectorAll("[data-size]") ) {
+    button.classList.toggle("on", Number(button.dataset.size) === (marker.size ?? 3));
+  }
+  const lock = element.querySelector(".lock");
+  lock.classList.toggle("on", !!marker.locked);
+  lock.setAttribute("aria-pressed", String(!!marker.locked));
+  lock.querySelector("i").className = `fa-solid ${marker.locked ? "fa-lock" : "fa-lock-open"}`;
   element.querySelector(".custom").value = marker.color;
 }

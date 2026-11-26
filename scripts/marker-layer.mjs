@@ -1,3 +1,5 @@
+import {MARKER_SIZES} from "./data.mjs";
+
 /** Glyph outlines as points on a unit circle; circle is drawn as a circle. */
 const GLYPH_SHAPES = {
   diamond: [0, -1, 1, 0, 0, 1, -1, 0],
@@ -123,7 +125,7 @@ export default class MarkerLayer {
         this.#sprites.set(marker.id, sprite);
         this.container.addChild(sprite.container);
       }
-      sprite.draw(marker, size, labels, marker.id === selected);
+      sprite.draw(marker, size * (MARKER_SIZES[marker.size] ?? 1), labels, marker.id === selected);
     }
   }
 

@@ -17,7 +17,7 @@
     <div class="form-group">
       <label>{{localize "VIRAHOLO.Config.image"}}</label>
       <div class="form-fields">
-        <file-picker name="texture.src" type="imagevideo" value="{{image}}"></file-picker>
+        <file-picker name="{{flags}}.image" type="imagevideo" value="{{holo.image}}"></file-picker>
       </div>
     </div>
     {{/unless}}
@@ -118,6 +118,44 @@
   </fieldset>
 
   <fieldset>
+    <legend>{{localize "VIRAHOLO.Link.Legend"}}</legend>
+    {{#if holo.link}}
+    <div class="form-group">
+      <label>{{localize "VIRAHOLO.Link.LinkedTo"}}</label>
+      <div class="form-fields">
+        <a class="vira-holo-link-name" data-action="openLink"><i class="fa-solid fa-link" inert></i> {{holo.link.name}}</a>
+        <button type="button" data-action="leaveLink"><i class="fa-solid fa-link-slash" inert></i> {{localize "VIRAHOLO.Link.Leave"}}</button>
+      </div>
+    </div>
+    <div class="form-group">
+      <label>{{localize "VIRAHOLO.Link.Shares"}}</label>
+      <div class="form-fields vira-holo-share">
+        {{#each shareOptions}}
+        <label class="checkbox"><input type="checkbox" name="{{@root.flags}}.link.share.{{section}}" {{checked checked}}> {{label}}</label>
+        {{/each}}
+      </div>
+      <p class="hint">{{localize "VIRAHOLO.Link.SharesHint"}}</p>
+    </div>
+    {{else}}
+    {{#if holo.linkMissing}}<p class="hint vira-holo-warning">{{localize "VIRAHOLO.Link.Missing"}}</p>{{/if}}
+    <div class="form-group">
+      <label>{{localize "VIRAHOLO.Link.Join"}}</label>
+      <div class="form-fields">
+        <select data-link-choice aria-label="{{localize "VIRAHOLO.Link.Join"}}">{{selectOptions linkChoices}}</select>
+        <button type="button" data-action="joinLink" {{disabled (not hasLinks)}}>{{localize "VIRAHOLO.Link.JoinButton"}}</button>
+      </div>
+    </div>
+    <div class="form-group">
+      <label></label>
+      <div class="form-fields">
+        <button type="button" data-action="createLink"><i class="fa-solid fa-link" inert></i> {{localize "VIRAHOLO.Link.Create"}}</button>
+      </div>
+      <p class="hint">{{localize "VIRAHOLO.Link.Hint"}}</p>
+    </div>
+    {{/if}}
+  </fieldset>
+
+  <fieldset>
     <legend>{{localize "VIRAHOLO.Config.Control"}}</legend>
     <div class="form-group">
       <label for="{{partId}}-interactive">{{localize "VIRAHOLO.Config.interactive"}}</label>
@@ -139,6 +177,14 @@
       </div>
       <p class="hint">{{localize "VIRAHOLO.Config.ownersHint"}}</p>
     </div>
+    {{#each cameraSliders}}
+    <div class="form-group">
+      <label>{{label}}</label>
+      <div class="form-fields">
+        <range-picker name="{{name}}" value="{{value}}" min="{{min}}" max="{{max}}" step="{{step}}"></range-picker>
+      </div>
+    </div>
+    {{/each}}
     <div class="form-group">
       <label>{{localize "VIRAHOLO.Config.view"}}</label>
       <div class="form-fields">

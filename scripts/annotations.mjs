@@ -1,7 +1,11 @@
-import {MAX_MARKERS, MODULE_ID, sanitizeMarker} from "./data.mjs";
+import {MAX_MARKERS, getHoloData, sanitizeMarker} from "./data.mjs";
+import {storageOf, writeHolo} from "./links.mjs";
 import {requestMarkerEdit} from "./socket.mjs";
 
-/** @type {Map<string, Promise>} Pending edits per tile UUID, applied one after another. */
+/**
+ * @type {Map<string, Promise>} Pending edits per storing document (the tile, or its link's journal when waypoints
+ * are shared), applied one after another.
+ */
 const queues = new Map();
 
 /**
@@ -26,15 +30,16 @@ export function editMarkers(doc, edit) {
  * @param {MarkerEdit} edit
  */
 export function applyMarkerEdit(doc, edit) {
-  const previous = queues.get(doc.uuid) ?? Promise.resolve();
+  const key = storageOf(doc, "annotations").uuid;
+  const previous = queues.get(key) ?? Promise.resolve();
   const next = previous.then(() => applyNow(doc, edit)).catch(err => console.error("Vira Holo |", err));
-  queues.set(doc.uuid, next);
+  queues.set(key, next);
   return next;
 }
 
 async function applyNow(doc, edit) {
   if ( !doc.parent?.tiles.has(doc.id) ) return; // Deleted meanwhile
-  const markers = foundry.utils.deepClone(doc.getFlag(MODULE_ID, "annotations.markers") ?? []);
+  const markers = foundry.utils.deepClone(getHoloData(doc).annotations.markers);
   const index = markers.findIndex(m => m.id === edit.id);
   switch ( edit.type ) {
     case "add": {
@@ -60,5 +65,5 @@ async function applyNow(doc, edit) {
     default:
       return;
   }
-  await doc.update({[`flags.${MODULE_ID}.annotations.markers`]: markers});
+  await writeHolo(doc, {annotations: {markers}});
 }

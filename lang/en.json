@@ -55,7 +55,6 @@
         "solidity": "Solidity",
         "scanlines": "Scanlines",
         "flicker": "Flicker",
-        "spin": "Auto-spin speed",
         "lift": "Float height",
         "projector": "Projector disc",
         "labels": "Show labels"
@@ -64,7 +63,10 @@
       "markerCount": "Waypoints",
       "clearMarkers": "Clear all waypoints",
       "clearMarkersConfirm": "Remove every waypoint from this hologram?",
-      "markersHint": "Place pins with the waypoint glyph on the hologram's tool ring; click a pin to edit it."
+      "markersHint": "Place pins with the waypoint glyph on the hologram's tool ring; click a pin to edit it.",
+      "camera": {
+        "spin": "Auto-spin speed"
+      }
     },
     "Card": {
       "Title": "Waypoint",
@@ -79,7 +81,40 @@
         "triangle": "Triangle",
         "circle": "Circle",
         "square": "Square"
+      },
+      "Lock": "Lock: can't be dragged",
+      "HintLocked": "Locked: unlock it to drag it again.",
+      "Size": {
+        "1": "Small",
+        "2": "Medium",
+        "3": "Large"
+      },
+      "SizeShort": {
+        "1": "S",
+        "2": "M",
+        "3": "L"
       }
+    },
+    "Link": {
+      "Legend": "Link",
+      "Folder": "Holo Links",
+      "PageName": "About",
+      "PageText": "This entry stores a Vira Holo link: what its linked holograms share. Change it from any linked hologram's settings; rename it freely.",
+      "LinkedTo": "Linked to",
+      "Leave": "Unlink",
+      "Shares": "Shares",
+      "SharesHint": "Shared parts are the same on every hologram in this link, on any scene. Unlinking keeps what the hologram shows now.",
+      "Share": {
+        "content": "Content",
+        "annotations": "Waypoints",
+        "view": "View",
+        "look": "Look"
+      },
+      "Join": "Join link",
+      "JoinButton": "Link",
+      "Create": "New link from this hologram",
+      "Hint": "A link lets several holograms share their content, waypoints, view or look, e.g. three map tables or thirty notice boards. Links are journal entries in the Holo Links folder.",
+      "Missing": "This hologram's link (journal entry) no longer exists, so it shows its own settings."
     }
   }
 }

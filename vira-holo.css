@@ -165,6 +165,7 @@
   box-shadow: 0 0 8px color-mix(in srgb, var(--accent) 35%, transparent);
 }
 .vira-holo-card .glyphs,
+.vira-holo-card .sizes,
 .vira-holo-card .inks,
 .vira-holo-card .actions {
   position: relative;
@@ -172,7 +173,8 @@
   gap: 6px;
   margin-bottom: 7px;
 }
-.vira-holo-card .glyphs button {
+.vira-holo-card .glyphs button,
+.vira-holo-card .sizes button {
   flex: 1;
   height: 24px;
   text-align: center;
@@ -183,8 +185,17 @@
   font-size: 11px;
   line-height: 22px;
 }
-.vira-holo-card .glyphs button:hover { color: #fff; border-color: #ffd9a0; }
-.vira-holo-card .glyphs button.on {
+.vira-holo-card .sizes button {
+  height: 20px;
+  font-size: 9px;
+  letter-spacing: 1.2px;
+  line-height: 18px;
+}
+.vira-holo-card .glyphs button:hover,
+.vira-holo-card .sizes button:hover { color: #fff; border-color: #ffd9a0; }
+.vira-holo-card .glyphs button.on,
+.vira-holo-card .sizes button.on,
+.vira-holo-card .actions button.lock.on {
   color: var(--accent);
   border-color: var(--accent);
   background: color-mix(in srgb, var(--accent) 16%, transparent);
@@ -227,6 +238,10 @@
   border-color: var(--accent);
   box-shadow: 0 0 8px color-mix(in srgb, var(--accent) 30%, transparent);
 }
+.vira-holo-card .actions button.lock {
+  flex: 0 0 26px;
+  font-size: 10px;
+}
 .vira-holo-card .actions button.delete {
   border-color: rgb(255 77 94 / 0.45);
   background: rgb(255 77 94 / 0.1);
@@ -253,6 +268,23 @@
 .vira-holo-config .vira-holo-count {
   min-width: 2em;
   text-align: center;
+}
+
+.vira-holo-config .vira-holo-share {
+  flex-wrap: wrap;
+  gap: 4px 12px;
+}
+.vira-holo-config .vira-holo-share label.checkbox {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.vira-holo-config .vira-holo-link-name {
+  flex: 1;
+  cursor: pointer;
+}
+.vira-holo-config .vira-holo-warning {
+  color: var(--color-level-warning, #ee9b3a);
 }
 
 .vira-holo-config textarea {
