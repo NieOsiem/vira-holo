@@ -1,4 +1,5 @@
 import {getHoloData} from "./data.mjs";
+import MarkerLayer from "./marker-layer.mjs";
 import TextPanel from "./text-panel.mjs";
 
 const TAU = Math.PI * 2;
@@ -14,6 +15,10 @@ const MAX_RT_SIZE = 2048;
 const DISC_RADIUS = 1.08;
 /** One scanline per this many scene pixels of tile height. */
 const SCANLINE_SPACING = 6;
+/** Waypoint stem height, in footprint units. */
+const STEM_HEIGHT = 0.16;
+/** Longest side of the CPU copy of a heightmap, used to stand waypoints on the terrain and to pick points on it. */
+const HEIGHT_SAMPLES = 512;
 /** Approximate number of wireframe lines across the terrain in each direction. */
 const WIRE_LINES = 40;
 const CONTOUR_LEVELS = 12;
@@ -261,6 +266,31 @@ function createGrid(n, hx, y, hz) {
   return {surface: build(triangles), wire: build(new IndexArray(lines))};
 }
 
+/** Mirrors the shaders' depthFade: farther points dim a little. */
+function depthFade(depth, far=0.6) {
+  return 1 + ((far - 1) * Math.clamp((depth + 1) * 0.5, 0, 1));
+}
+
+/**
+ * Read a heightmap's red channel into a small CPU grid. The texture's own image is drawn onto a canvas, so no GPU
+ * readback is needed.
+ * @param {PIXI.Texture} texture
+ * @returns {{width: number, height: number, data: Float32Array}|null}
+ */
+function readHeights(texture) {
+  const source = texture.baseTexture.resource?.source;
+  if ( !source ) return null;
+  const scale = Math.min(1, HEIGHT_SAMPLES / Math.max(texture.width, texture.height));
+  const width = Math.max(2, Math.round(texture.width * scale));
+  const height = Math.max(2, Math.round(texture.height * scale));
+  const context = new OffscreenCanvas(width, height).getContext("2d", {willReadFrequently: true});
+  context.drawImage(source, 0, 0, width, height);
+  const pixels = context.getImageData(0, 0, width, height).data;
+  const data = new Float32Array(width * height);
+  for ( let i = 0; i < data.length; i++ ) data[i] = pixels[i * 4] / 255;
+  return {width, height, data};
+}
+
 /** Destroy geometries together with their (possibly shared) GPU buffers, which Geometry#destroy leaves alive. */
 function destroyGeometries(...geometries) {
   const buffers = new Set(geometries.flatMap(g => g.buffers));
@@ -296,7 +326,8 @@ export default class HoloRenderer {
     this.panelMesh = new PIXI.Mesh(this.panelGeometry, this.panelShader, this.state);
     this.discMesh = new PIXI.Mesh(this.discGeometry, this.discShader, this.state);
     this.stage = new PIXI.Container();
-    this.stage.addChild(this.discMesh, this.panelMesh);
+    this.markerLayer = new MarkerLayer();
+    this.stage.addChild(this.discMesh, this.panelMesh, this.markerLayer.container);
     this.configure();
   }
 
@@ -315,6 +346,14 @@ export default class HoloRenderer {
   #heightmap = null;
   /** @type {TextPanel|null} */
   #textPanel = null;
+  /** CPU copy of the heightmap: {width, height, data: Float32Array}. */
+  #heights = null;
+  #hx = 1;
+  #hz = 1;
+  /** @type {Map<string, {u: number, v: number}>} Unsaved positions of waypoints being dragged. */
+  #liveMarkers = new Map();
+  /** Waypoint whose card is open on this client. */
+  selectedMarker = null;
 
   #lookUniforms(extra={}) {
     return {
@@ -330,7 +369,10 @@ export default class HoloRenderer {
     const data = getHoloData(this.tile.document);
     this.data = data;
     // A saved change supersedes any live preview, except while this client is still dragging.
-    if ( !this.#dragging ) this.#liveCamera = null;
+    if ( !this.#dragging ) {
+      this.#liveCamera = null;
+      this.#liveMarkers.clear();
+    }
     this.color.set(new PIXI.Color(data.look.color).toRgbArray());
     this.resize();
     const src = (data.mode === "terrain") ? data.terrain.heightmap : null;
@@ -373,12 +415,32 @@ export default class HoloRenderer {
   async #loadHeightmap(src) {
     this.#heightmapSrc = src;
     this.#heightmap = null;
+    this.#heights = null;
     if ( !src ) return;
     const loadTexture = foundry.canvas.loadTexture ?? globalThis.loadTexture;
     const texture = await loadTexture(src);
     if ( this.#heightmapSrc !== src ) return; // Superseded by a newer request
     if ( !texture ) console.warn(`Vira Holo | Could not load heightmap "${src}"; showing the flat image instead.`);
     this.#heightmap = texture;
+    this.#heights = texture ? readHeights(texture) : null;
+  }
+
+  /** Terrain height (0..1) at an image position, matching what the GPU draws; 0 without terrain. */
+  heightAt(u, v) {
+    const heights = this.#heights;
+    if ( !heights || !this.#terrain ) return 0;
+    const {width, height, data} = heights;
+    const x = Math.clamp(u, 0, 1) * (width - 1);
+    const y = Math.clamp(v, 0, 1) * (height - 1);
+    const x0 = Math.floor(x);
+    const y0 = Math.floor(y);
+    const x1 = Math.min(x0 + 1, width - 1);
+    const y1 = Math.min(y0 + 1, height - 1);
+    const fx = x - x0;
+    const fy = y - y0;
+    const top = (data[(y0 * width) + x0] * (1 - fx)) + (data[(y0 * width) + x1] * fx);
+    const bottom = (data[(y1 * width) + x0] * (1 - fx)) + (data[(y1 * width) + x1] * fx);
+    return (top * (1 - fy)) + (bottom * fy);
   }
 
   /**
@@ -412,6 +474,8 @@ export default class HoloRenderer {
     if ( key === this.#footprint ) return;
     this.#footprint = key;
     setQuad(this.panelGeometry, hx, lift, hz, [0, 0, 1, 0, 1, 1, 0, 1]);
+    this.#hx = hx;
+    this.#hz = hz;
     const longest = Math.max(hx, hz);
     this.panelShader.uniforms.uPanelShape.set([hx / longest, hz / longest]);
 
@@ -435,6 +499,7 @@ export default class HoloRenderer {
       ]
     };
     this.stage.addChild(...this.#terrain.meshes);
+    this.stage.addChild(this.markerLayer.container); // Keep waypoints on top
   }
 
   #destroyTerrain() {
@@ -501,6 +566,7 @@ export default class HoloRenderer {
     disc.uOpacity = look.opacity;
     disc.uFlicker = this.#flicker;
     disc.uDashPhase = (seconds * 0.5) % 1;
+    this.#layoutMarkers(pitch);
   }
 
   /** The camera in effect: a live (unsaved) one while being dragged, otherwise the saved one. */
@@ -542,10 +608,199 @@ export default class HoloRenderer {
     renderer.render(this.stage, {renderTexture: this.renderTexture, clear: true});
   }
 
+  /* -------------------------------------------- */
+  /*  Waypoints and picking                       */
+  /* -------------------------------------------- */
+
+  /** The waypoints as currently shown, including unsaved drags. */
+  get markers() {
+    return this.data.annotations.markers.map(m => {
+      const live = this.#liveMarkers.get(m.id);
+      return live ? {...m, ...live} : m;
+    });
+  }
+
+  /** @param {string} id @param {{u: number, v: number}|null} position */
+  setLiveMarker(id, position) {
+    if ( position ) this.#liveMarkers.set(id, position);
+    else this.#liveMarkers.delete(id);
+  }
+
+  /** Object-space position of an image point on the hologram's surface. */
+  #surfacePosition(u, v) {
+    const {lift} = this.data.look;
+    const relief = this.data.terrain.relief;
+    return {
+      x: ((u * 2) - 1) * this.#hx,
+      y: lift + (this.heightAt(u, v) * relief),
+      z: (1 - (v * 2)) * this.#hz
+    };
+  }
+
+  /**
+   * Project an object-space point into render-texture pixels with the camera as last drawn (same maths as PROJECT).
+   * @returns {{x: number, y: number, depth: number}|null}   Null behind the camera
+   */
+  #project({x: px, y: py, z: pz}) {
+    const [yaw, pitch, dist, ppu] = this.cameraUniform;
+    const [tx, tz] = this.targetUniform;
+    const [cx, cy] = this.centerUniform;
+    px -= tx;
+    pz -= tz;
+    const cosY = Math.cos(yaw);
+    const sinY = Math.sin(yaw);
+    const cosP = Math.cos(pitch);
+    const sinP = Math.sin(pitch);
+    const x = (px * cosY) + (pz * sinY);
+    const z1 = (pz * cosY) - (px * sinY);
+    const y = (py * cosP) + (z1 * sinP);
+    const z = (z1 * cosP) - (py * sinP);
+    const w = z + dist;
+    if ( w <= 0.05 ) return null;
+    const s = (FOCAL * ppu) / w;
+    return {x: cx + (x * s), y: cy - (y * s), depth: z};
+  }
+
+  /** How visible a render-texture point is inside the projection area (matches the shaders' volumeFade). */
+  #volumeAlpha({x, y}) {
+    const [w, h, rect] = this.volumeUniform;
+    const qx = Math.abs(((x / w) * 2) - 1);
+    const qy = Math.abs(((y / h) * 2) - 1);
+    const d = rect ? Math.max(qx, qy) : Math.hypot(qx, qy);
+    const t = Math.clamp((d - 0.88) / 0.12, 0, 1);
+    return 1 - (t * t * (3 - (2 * t)));
+  }
+
+  #layoutMarkers(pitch) {
+    const {look} = this.data;
+    const rt = this.renderTexture;
+    const markers = this.markers;
+    const size = Math.clamp(Math.min(rt.width, rt.height) * 0.022, 7, 32);
+    this.markerLayer.sync(markers, {size, labels: look.labels, selected: this.selectedMarker});
+    for ( const marker of markers ) {
+      const surface = this.#surfacePosition(marker.u, marker.v);
+      const base = this.#project(surface);
+      const head = this.#project({...surface, y: surface.y + STEM_HEIGHT});
+      const sprite = this.markerLayer.get(marker.id);
+      if ( !base || !head ) {
+        sprite.container.visible = false;
+        continue;
+      }
+      const alpha = look.opacity * this.#flicker * this.#volumeAlpha(base) * depthFade(base.depth);
+      sprite.place(base, head, Math.sin(pitch), alpha);
+    }
+  }
+
+  /**
+   * Convert a canvas point to render-texture pixels of this hologram.
+   * @param {{x: number, y: number}} point
+   */
+  toTexturePoint(point) {
+    const mesh = this.tile.mesh;
+    const local = mesh.toLocal(new PIXI.Point(point.x, point.y), canvas.stage);
+    return {x: local.x + (mesh.anchor.x * this.renderTexture.width), y: local.y + (mesh.anchor.y * this.renderTexture.height)};
+  }
+
+  /**
+   * Convert render-texture pixels of this hologram to a canvas point.
+   * @param {{x: number, y: number}} point
+   */
+  toCanvasPoint(point) {
+    const mesh = this.tile.mesh;
+    const local = new PIXI.Point(point.x - (mesh.anchor.x * this.renderTexture.width),
+      point.y - (mesh.anchor.y * this.renderTexture.height));
+    return canvas.stage.toLocal(local, mesh);
+  }
+
+  /** Camera target that centres the projection on an image position. */
+  surfaceTarget(u, v) {
+    return {x: Math.clamp(((u * 2) - 1) * this.#hx, -1, 1), z: Math.clamp((1 - (v * 2)) * this.#hz, -1, 1)};
+  }
+
+  /** The waypoint under a render-texture point, if any. */
+  markerAt(point) {
+    return this.markerLayer.hitTest(point.x, point.y);
+  }
+
+  /** Where a waypoint's head is drawn, in render-texture pixels. */
+  markerTip(id) {
+    return this.markerLayer.get(id)?.tip ?? null;
+  }
+
+  /**
+   * The image position (u, v) of the hologram surface under a render-texture point: the inverse of #project along
+   * the camera ray, intersected with the panel or marched against the terrain.
+   * @returns {{u: number, v: number}|null}
+   */
+  surfaceAt({x: sx, y: sy}) {
+    const [yaw, pitch, dist, ppu] = this.cameraUniform;
+    const [tx, tz] = this.targetUniform;
+    const [cx, cy] = this.centerUniform;
+    const a = (sx - cx) / (FOCAL * ppu);
+    const b = -(sy - cy) / (FOCAL * ppu);
+    const cosY = Math.cos(yaw);
+    const sinY = Math.sin(yaw);
+    const cosP = Math.cos(pitch);
+    const sinP = Math.sin(pitch);
+    // Camera-space ray: (a·t, b·t, t − dist) for t > 0; rotate back into object space.
+    const at = t => {
+      const x = a * t;
+      const y = b * t;
+      const z = t - dist;
+      const py = (y * cosP) - (z * sinP);
+      const z1 = (y * sinP) + (z * cosP);
+      return {x: (x * cosY) - (z1 * sinY) + tx, y: py, z: (x * sinY) + (z1 * cosY) + tz};
+    };
+    const toUV = p => ({u: ((p.x / this.#hx) + 1) / 2, v: (1 - (p.z / this.#hz)) / 2});
+    const inside = ({u, v}) => (u >= 0) && (u <= 1) && (v >= 0) && (v <= 1);
+    // Height of the ray above a horizontal plane at height h changes linearly with t.
+    const slope = (b * cosP) - sinP;
+    const tAtHeight = h => (h - (dist * sinP)) / slope;
+    const {lift} = this.data.look;
+    if ( Math.abs(slope) < 1e-6 ) return null;
+
+    if ( !this.#terrain || !this.#heights ) {
+      const t = tAtHeight(lift);
+      if ( t <= 0 ) return null;
+      const uv = toUV(at(t));
+      return inside(uv) ? uv : null;
+    }
+
+    const relief = this.data.terrain.relief;
+    const above = t => {
+      const p = at(t);
+      const uv = toUV(p);
+      return p.y - (lift + (inside(uv) ? this.heightAt(uv.u, uv.v) * relief : 0));
+    };
+    const tTop = Math.max(tAtHeight(lift + relief), 1e-3);
+    const tBottom = tAtHeight(lift);
+    if ( tBottom <= 0 ) return null;
+    const steps = 96;
+    let previous = tTop;
+    for ( let i = 1; i <= steps; i++ ) {
+      const t = tTop + (((tBottom - tTop) * i) / steps);
+      if ( above(t) > 0 ) {
+        previous = t;
+        continue;
+      }
+      let lo = previous;
+      let hi = t;
+      for ( let j = 0; j < 12; j++ ) {
+        const mid = (lo + hi) / 2;
+        if ( above(mid) > 0 ) lo = mid;
+        else hi = mid;
+      }
+      const uv = toUV(at(hi));
+      return inside(uv) ? uv : null;
+    }
+    return null;
+  }
+
   destroy() {
     this.#heightmapSrc = null;
     this.#textPanel?.destroy();
     this.#destroyTerrain();
+    this.markerLayer.destroy();
     this.stage.destroy({children: true});
     destroyGeometries(this.discGeometry, this.panelGeometry);
     this.renderTexture.destroy(true);

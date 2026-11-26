@@ -1,0 +1,121 @@
+import {INKS, MARKER_GLYPHS, MAX_LABEL_LENGTH} from "./data.mjs";
+
+const GLYPH_CHARACTERS = {diamond: "◆", triangle: "▲", circle: "●", square: "■"};
+/** How long a freshly placed waypoint may take to arrive from the GM before its card gives up. */
+const PENDING_MS = 3000;
+
+/**
+ * @typedef {object} CardActions
+ * @property {(changes: object) => void} update
+ * @property {() => void} remove
+ * @property {() => void} focus
+ */
+
+/** @type {{element: HTMLElement, tile: Tile, holo: HoloRenderer, id: string, actions: CardActions,
+ *          pendingUntil: number, shown: string}|null} */
+let card = null;
+
+/**
+ * Open the editor for one waypoint next to its pin.
+ * @param {Tile} tile
+ * @param {HoloRenderer} holo
+ * @param {string} id
+ * @param {CardActions} actions
+ */
+export function openCard(tile, holo, id, actions) {
+  closeCard();
+  const localize = key => game.i18n.localize(`VIRAHOLO.Card.${key}`);
+  const element = document.createElement("div");
+  element.className = "vira-holo-card";
+  element.hidden = true;
+  element.style.setProperty("--holo-color", holo.data.look.color);
+  element.innerHTML = `
+    <header><b>${localize("Title")}</b><button type="button" class="close" aria-label="${localize("Close")}">✕</button></header>
+    <input type="text" class="label" maxlength="${MAX_LABEL_LENGTH}" placeholder="${localize("Label")}"
+      aria-label="${localize("Label")}">
+    <div class="glyphs">${MARKER_GLYPHS.map(glyph => `<button type="button" data-glyph="${glyph}"
+      aria-label="${localize(`Glyph.${glyph}`)}" data-tooltip="${localize(`Glyph.${glyph}`)}">${GLYPH_CHARACTERS[glyph]}</button>`).join("")}</div>
+    <div class="inks">${INKS.map(color => `<button type="button" data-ink="${color}" style="--ink: ${color}"
+      aria-label="${color}"></button>`).join("")}<input type="color" class="custom" aria-label="${localize("CustomInk")}"
+      data-tooltip="${localize("CustomInk")}"></div>
+    <div class="actions">
+      <button type="button" class="focus">${localize("Focus")}</button>
+      <button type="button" class="delete">${localize("Delete")}</button>
+    </div>
+    <p class="hint">${localize("Hint")}</p>`;
+  document.body.append(element);
+  card = {element, tile, holo, id, actions, pendingUntil: performance.now() + PENDING_MS, shown: ""};
+  holo.selectedMarker = id;
+
+  element.querySelector(".close").addEventListener("click", closeCard);
+  const label = element.querySelector(".label");
+  label.addEventListener("change", () => actions.update({label: label.value}));
+  label.addEventListener("keydown", event => {
+    if ( event.key === "Enter" ) label.blur();
+    else if ( event.key === "Escape" ) closeCard();
+    event.stopPropagation(); // Keep Foundry's keybindings out while typing
+  });
+  for ( const button of element.querySelectorAll("[data-glyph]") ) {
+    button.addEventListener("click", () => actions.update({glyph: button.dataset.glyph}));
+  }
+  for ( const button of element.querySelectorAll("[data-ink]") ) {
+    button.addEventListener("click", () => actions.update({color: button.dataset.ink}));
+  }
+  const custom = element.querySelector(".custom");
+  custom.addEventListener("change", () => actions.update({color: custom.value}));
+  element.querySelector(".focus").addEventListener("click", () => actions.focus());
+  element.querySelector(".delete").addEventListener("click", () => {
+    actions.remove();
+    closeCard();
+  });
+  updateCard();
+}
+
+export function closeCard() {
+  if ( !card ) return;
+  if ( card.holo.selectedMarker === card.id ) card.holo.selectedMarker = null;
+  card.element.remove();
+  card = null;
+}
+
+/** Did this event happen on the card? */
+export function isCardEvent(event) {
+  return !!card && card.element.contains(event.target);
+}
+
+/** Keep the card next to its pin (which moves as the hologram turns) and in step with edits from others. */
+export function updateCard() {
+  if ( !card ) return;
+  const {tile, holo, id, element} = card;
+  if ( tile.destroyed ) return closeCard();
+  const marker = holo.markers.find(m => m.id === id);
+  if ( !marker ) {
+    // Not saved yet (just placed) or deleted by someone else.
+    if ( performance.now() > card.pendingUntil ) closeCard();
+    return;
+  }
+  card.pendingUntil = 0;
+  const tip = holo.markerTip(id);
+  if ( !tip || !tile.visible ) {
+    element.hidden = true;
+    return;
+  }
+  element.hidden = false;
+  const {x, y} = canvas.clientCoordinatesFromCanvas(holo.toCanvasPoint(tip));
+  const {offsetWidth: w, offsetHeight: h} = element;
+  element.style.left = `${Math.clamp(x + 18, 8, window.innerWidth - w - 8)}px`;
+  element.style.top = `${Math.clamp(y - 24, 8, window.innerHeight - h - 8)}px`;
+
+  const shown = JSON.stringify(marker);
+  if ( shown === card.shown ) return;
+  card.shown = shown;
+  const label = element.querySelector(".label");
+  if ( document.activeElement !== label ) label.value = marker.label;
+  for ( const button of element.querySelectorAll("[data-glyph]") ) {
+    button.classList.toggle("on", button.dataset.glyph === marker.glyph);
+  }
+  for ( const button of element.querySelectorAll("[data-ink]") ) {
+    button.classList.toggle("on", button.dataset.ink.toLowerCase() === marker.color.toLowerCase());
+  }
+  element.querySelector(".custom").value = marker.color;
+}

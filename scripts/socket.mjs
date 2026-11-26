@@ -1,4 +1,5 @@
 import {MODULE_ID, canDrive} from "./data.mjs";
+import {applyMarkerEdit} from "./annotations.mjs";
 import {getHolograms} from "./tile-holo.mjs";
 
 const EVENT = `module.${MODULE_ID}`;
@@ -11,7 +12,25 @@ export function registerSocket() {
     const sender = game.users.get(senderId);
     if ( message?.action === "camera" ) onCamera(message, sender);
     else if ( message?.action === "save" ) onSave(message, sender);
+    else if ( message?.action === "markers" ) onMarkers(message, sender);
   });
+}
+
+/** The active GM, or null with a warning to the user when no GM is connected to save changes. */
+function activeGM() {
+  const gm = game.users.activeGM;
+  if ( !gm ) ui.notifications.warn("VIRAHOLO.NoActiveGM", {localize: true});
+  return gm;
+}
+
+/**
+ * Ask the active GM to apply a waypoint edit.
+ * @param {TileDocument} doc
+ * @param {import("./annotations.mjs").MarkerEdit} edit
+ */
+export function requestMarkerEdit(doc, edit) {
+  const gm = activeGM();
+  if ( gm ) game.socket.emit(EVENT, {action: "markers", uuid: doc.uuid, edit}, {recipients: [gm.id]});
 }
 
 /**
@@ -31,8 +50,8 @@ export function broadcastCamera(doc, camera) {
 export function saveDriverChanges(doc, changes) {
   const update = sanitize(changes);
   if ( game.user.isGM ) return doc.update({[`flags.${MODULE_ID}`]: update});
-  const gm = game.users.activeGM;
-  if ( !gm ) return ui.notifications.warn("VIRAHOLO.NoActiveGM", {localize: true});
+  const gm = activeGM();
+  if ( !gm ) return;
   game.socket.emit(EVENT, {action: "save", uuid: doc.uuid, changes}, {recipients: [gm.id]});
 }
 
@@ -47,6 +66,13 @@ function onSave({uuid, changes}, sender) {
   const doc = fromUuidSync(uuid);
   if ( !doc || !canDrive(sender, doc) ) return;
   doc.update({[`flags.${MODULE_ID}`]: sanitize(changes)});
+}
+
+function onMarkers({uuid, edit}, sender) {
+  if ( game.user !== game.users.activeGM ) return;
+  const doc = fromUuidSync(uuid);
+  if ( !doc || !canDrive(sender, doc) || (typeof edit !== "object") ) return;
+  applyMarkerEdit(doc, edit); // Every field is sanitized there
 }
 
 /** Only the fields a driver may change, and only as finite numbers. */

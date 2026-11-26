@@ -6,6 +6,7 @@ const GLYPHS = {
     + '<circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none"/>',
   spin: '<path d="M3.5 12a8.5 8.5 0 0 1 14.4-6.1L21 8"/><path d="M21 3.2V8h-4.8"/>'
     + '<path d="M20.5 12a8.5 8.5 0 0 1-14.4 6.1L3 16"/><path d="M3 20.8V16h4.8"/>',
+  waypoint: '<path d="M20 10c0 6-8 12-8 12S4 16 4 10a8 8 0 0 1 16 0z"/><circle cx="12" cy="10" r="2.8"/>',
   settings: '<path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/>'
     + '<circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/>'
 };
@@ -28,7 +29,7 @@ export function showRing(tile, actions) {
   hideRing();
   const element = document.createElement("div");
   element.className = "vira-holo-ring";
-  const names = ["recenter", "spin", ...(game.user.isGM ? ["settings"] : [])];
+  const names = ["recenter", "spin", "waypoint", ...(game.user.isGM ? ["settings"] : [])];
   const buttons = names.map((name, index) => {
     const button = document.createElement("button");
     button.type = "button";
@@ -52,6 +53,17 @@ export function showRing(tile, actions) {
 export function hideRing() {
   ring?.element.remove();
   ring = null;
+}
+
+/**
+ * Light up (or dim) a glyph that toggles a tool.
+ * @param {string} name
+ * @param {boolean} on
+ */
+export function setGlyphOn(name, on) {
+  const button = ring?.element.querySelector(`[data-glyph="${name}"]`);
+  button?.classList.toggle("on", on);
+  button?.setAttribute("aria-pressed", String(on));
 }
 
 /** Did this event happen on the ring? */

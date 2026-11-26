@@ -1,4 +1,5 @@
 import {MODULE_ID, defaultCamera, getHoloData} from "./data.mjs";
+import {editMarkers} from "./annotations.mjs";
 
 const {HandlebarsApplicationMixin, DocumentSheetV2} = foundry.applications.api;
 
@@ -30,7 +31,7 @@ export default class HoloConfig extends HandlebarsApplicationMixin(DocumentSheet
     position: {width: 480, height: "auto"},
     window: {icon: "fa-solid fa-cube", contentClasses: ["standard-form"]},
     form: {submitOnChange: true, closeOnSubmit: false},
-    actions: {resetView: HoloConfig.#onResetView}
+    actions: {resetView: HoloConfig.#onResetView, clearMarkers: HoloConfig.#onClearMarkers}
   };
 
   static PARTS = {
@@ -80,6 +81,7 @@ export default class HoloConfig extends HandlebarsApplicationMixin(DocumentSheet
       aligns: Object.fromEntries(["left", "center", "right"].map(a => [a, localize(`VIRAHOLO.Config.text.${a}`)])),
       lookSliders: sliders("look"),
       terrainSliders: sliders("terrain"),
+      markerCount: holo.annotations.markers.length,
       players: game.users.filter(u => !u.isGM).map(u => ({id: u.id, name: u.name, owner: holo.owners.includes(u.id)}))
     });
   }
@@ -102,6 +104,14 @@ export default class HoloConfig extends HandlebarsApplicationMixin(DocumentSheet
       if ( !equals(value, current[key]) ) changes[key] = value;
     }
     return foundry.utils.expandObject(changes);
+  }
+
+  static async #onClearMarkers() {
+    const confirmed = await foundry.applications.api.DialogV2.confirm({
+      window: {title: "VIRAHOLO.Config.clearMarkers"},
+      content: `<p>${game.i18n.localize("VIRAHOLO.Config.clearMarkersConfirm")}</p>`
+    });
+    if ( confirmed ) await editMarkers(this.document, {type: "clear"});
   }
 
   static async #onResetView() {

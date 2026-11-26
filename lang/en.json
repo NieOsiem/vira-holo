@@ -1,7 +1,7 @@
 {
   "VIRAHOLO": {
     "Title": "Vira Holo",
-    "NoActiveGM": "No GM is connected, so the hologram's new view can't be saved.",
+    "NoActiveGM": "No GM is connected, so this hologram change can't be saved.",
     "Mode": {
       "image": "Image",
       "terrain": "Terrain",
@@ -10,7 +10,8 @@
     "Ring": {
       "recenter": "Recenter view",
       "spin": "Auto-spin on / off",
-      "settings": "Hologram settings"
+      "settings": "Hologram settings",
+      "waypoint": "Waypoint tool: click the hologram to place a pin"
     },
     "Config": {
       "Open": "Hologram",
@@ -56,7 +57,28 @@
         "flicker": "Flicker",
         "spin": "Auto-spin speed",
         "lift": "Float height",
-        "projector": "Projector disc"
+        "projector": "Projector disc",
+        "labels": "Show labels"
+      },
+      "Waypoints": "Waypoints",
+      "markerCount": "Waypoints",
+      "clearMarkers": "Clear all waypoints",
+      "clearMarkersConfirm": "Remove every waypoint from this hologram?",
+      "markersHint": "Place pins with the waypoint glyph on the hologram's tool ring; click a pin to edit it."
+    },
+    "Card": {
+      "Title": "Waypoint",
+      "Close": "Close",
+      "Label": "Label",
+      "CustomInk": "Custom ink",
+      "Focus": "Focus",
+      "Delete": "Delete",
+      "Hint": "Drag the pin on the hologram to move it.",
+      "Glyph": {
+        "diamond": "Diamond",
+        "triangle": "Triangle",
+        "circle": "Circle",
+        "square": "Square"
       }
     }
   }

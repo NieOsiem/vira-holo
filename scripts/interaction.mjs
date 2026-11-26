@@ -1,7 +1,9 @@
-import {DEFAULTS, canDrive, defaultCamera} from "./data.mjs";
+import {DEFAULTS, MARKER_GLYPHS, canDrive, contrastingInk, defaultCamera} from "./data.mjs";
+import {editMarkers} from "./annotations.mjs";
 import HoloConfig from "./holo-config.mjs";
 import {MAX_DIST, MAX_PITCH, MIN_DIST, MIN_PITCH} from "./holo-renderer.mjs";
-import {hideRing, isRingEvent, refreshRing, showRing} from "./ring.mjs";
+import {closeCard, isCardEvent, openCard, updateCard} from "./pin-card.mjs";
+import {hideRing, isRingEvent, refreshRing, setGlyphOn, showRing} from "./ring.mjs";
 import {getHolograms} from "./tile-holo.mjs";
 import {broadcastCamera, saveDriverChanges} from "./socket.mjs";
 
@@ -15,14 +17,18 @@ const DOUBLE_CLICK_MS = 350;
 /** Movement (screen pixels) under which a press counts as a click rather than a drag. */
 const CLICK_SLOP = 4;
 
-/** @type {{tile: Tile, holo: HoloRenderer, pointerId: number, pan: boolean, x: number, y: number,
- *          start: object, camera: object, moved: boolean, lastSent: number}|null} */
+/**
+ * @type {{tile: Tile, holo: HoloRenderer, pointerId: number, pan: boolean, marker: string|null, x: number,
+ *         y: number, start: object, camera: object, position: object|null, moved: boolean, lastSent: number}|null}
+ */
 let drag = null;
 /**
  * The hologram the user last pressed on. It shows the tool ring, and the wheel zooms it while the pointer is over
  * it. Pressing anywhere else lets it go.
  */
 let engaged = null;
+/** While on, clicking the engaged hologram's surface places a waypoint. */
+let waypointTool = false;
 let lastClick = {tile: null, time: 0};
 let wheelSave = null;
 
@@ -42,16 +48,23 @@ export function registerInteraction() {
     if ( tile === engaged ) setEngaged(null);
   });
   Hooks.on("canvasTearDown", () => setEngaged(null));
+  Hooks.once("canvasReady", () => canvas.app.ticker.add(updateCard));
 }
 
 /** @param {{tile: Tile, holo: HoloRenderer}|null} hit */
 function setEngaged(hit) {
   engaged = hit?.tile ?? null;
+  waypointTool = false;
+  closeCard();
   if ( !hit ) return hideRing();
   const {tile, holo} = hit;
   showRing(tile, {
     recenter: () => recenter(tile, holo),
     spin: () => toggleSpin(tile, holo),
+    waypoint: () => {
+      waypointTool = !waypointTool;
+      setGlyphOn("waypoint", waypointTool);
+    },
     settings: () => HoloConfig.open(tile.document)
   });
 }
@@ -69,7 +82,7 @@ function swallow(event) {
  */
 function hologramAt(event) {
   if ( !canvas?.ready || (event.target !== canvas.app.view) || canvas.tiles.active ) return null;
-  const point = canvas.canvasCoordinatesFromClient({x: event.clientX, y: event.clientY});
+  const point = canvasPoint(event);
   let found = null;
   for ( const [tile, holo] of getHolograms() ) {
     if ( !holo.data.interactive || !tile.visible || !tile.mesh?.visible ) continue;
@@ -79,6 +92,10 @@ function hologramAt(event) {
   }
   if ( !found || placeableAt(event) ) return null;
   return found;
+}
+
+function canvasPoint(event) {
+  return canvas.canvasCoordinatesFromClient({x: event.clientX, y: event.clientY});
 }
 
 /** Is the canvas point inside the ellipse inscribed in the tile (the projection area)? */
@@ -111,7 +128,7 @@ function placeableAt(event) {
 }
 
 function onPointerDown(event) {
-  if ( (event.button !== 0) || isRingEvent(event) ) return;
+  if ( (event.button !== 0) || isRingEvent(event) || isCardEvent(event) ) return;
   const hit = hologramAt(event);
   if ( hit?.tile !== engaged ) setEngaged(hit);
   if ( !hit ) return;
@@ -125,10 +142,12 @@ function onPointerDown(event) {
     tile, holo,
     pointerId: event.pointerId,
     pan: event.shiftKey,
+    marker: holo.markerAt(holo.toTexturePoint(canvasPoint(event))),
     x: event.clientX,
     y: event.clientY,
     start: {...holo.camera},
     camera: {...holo.camera},
+    position: null,
     moved: false,
     lastSent: 0
   };
@@ -142,6 +161,17 @@ function onPointerMove(event) {
   if ( !drag.moved && (Math.hypot(dx, dy) < CLICK_SLOP) ) return;
   drag.moved = true;
   const {start, camera, holo} = drag;
+
+  // Dragging a waypoint slides it across the surface under the pointer.
+  if ( drag.marker ) {
+    const position = holo.surfaceAt(holo.toTexturePoint(canvasPoint(event)));
+    if ( position ) {
+      drag.position = position;
+      holo.setLiveMarker(drag.marker, position);
+    }
+    return;
+  }
+
   if ( drag.pan ) Object.assign(camera, panCamera(drag.tile, holo, start, dx, dy));
   else {
     camera.yaw = start.yaw - (dx * ORBIT_SPEED);
@@ -158,22 +188,56 @@ function onPointerMove(event) {
 function onPointerUp(event) {
   if ( !drag || (event.pointerId !== drag.pointerId) ) return;
   swallow(event);
-  const {tile, holo, camera, moved} = drag;
+  const {tile, holo, camera, moved, marker, position} = drag;
   drag = null;
   holo.dragging = false;
   if ( tile.destroyed ) return; // Deleted, or the scene changed, mid-drag
+
+  if ( marker ) {
+    if ( !moved ) return openMarkerCard(tile, holo, marker);
+    if ( position ) editMarkers(tile.document, {type: "update", id: marker, changes: position});
+    return;
+  }
   if ( moved ) {
     broadcastCamera(tile.document, camera);
     saveDriverChanges(tile.document, {camera});
     return;
   }
-  // A click: two in quick succession toggle auto-spin.
+
+  // A click on the hologram itself.
+  if ( waypointTool ) return placeMarker(tile, holo, canvasPoint(event));
+  closeCard();
   const now = performance.now();
   if ( (lastClick.tile === tile) && (now - lastClick.time < DOUBLE_CLICK_MS) ) {
     lastClick = {tile: null, time: 0};
     toggleSpin(tile, holo);
   }
   else lastClick = {tile, time: now};
+}
+
+/** Drop a new waypoint where the click meets the hologram's surface, and open its card. */
+function placeMarker(tile, holo, point) {
+  const position = holo.surfaceAt(holo.toTexturePoint(point));
+  if ( !position ) return;
+  const color = contrastingInk(holo.data.look.color);
+  const marker = {id: foundry.utils.randomID(), ...position, label: "", glyph: MARKER_GLYPHS[0], color};
+  editMarkers(tile.document, {type: "add", marker});
+  openMarkerCard(tile, holo, marker.id);
+}
+
+function openMarkerCard(tile, holo, id) {
+  openCard(tile, holo, id, {
+    update: changes => editMarkers(tile.document, {type: "update", id, changes}),
+    remove: () => editMarkers(tile.document, {type: "delete", id}),
+    focus: () => {
+      const marker = holo.markers.find(m => m.id === id);
+      if ( !marker ) return;
+      const camera = {...holo.camera, ...holo.surfaceTarget(marker.u, marker.v)};
+      holo.setLiveCamera(camera);
+      broadcastCamera(tile.document, camera);
+      saveDriverChanges(tile.document, {camera});
+    }
+  });
 }
 
 /**
