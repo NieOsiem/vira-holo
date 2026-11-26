@@ -11,7 +11,15 @@
       "recenter": "Recenter view",
       "spin": "Auto-spin on / off",
       "settings": "Hologram settings",
-      "waypoint": "Waypoint tool: click the hologram to place a pin"
+      "waypoint": "Waypoint tool: click the hologram to place a pin",
+      "draw": "Draw tool: drag across the hologram to ink it",
+      "ink": "Ink",
+      "customInk": "Custom ink",
+      "width": {
+        "1": "Thin",
+        "2": "Medium",
+        "3": "Thick"
+      }
     },
     "Config": {
       "Open": "Hologram",
@@ -59,11 +67,15 @@
         "projector": "Projector disc",
         "labels": "Show labels"
       },
-      "Waypoints": "Waypoints",
+      "Annotations": "Waypoints & drawings",
       "markerCount": "Waypoints",
       "clearMarkers": "Clear all waypoints",
       "clearMarkersConfirm": "Remove every waypoint from this hologram?",
       "markersHint": "Place pins with the waypoint glyph on the hologram's tool ring; click a pin to edit it.",
+      "strokeCount": "Drawings",
+      "clearStrokes": "Clear all drawings",
+      "clearStrokesConfirm": "Remove every drawing from this hologram?",
+      "strokesHint": "Draw with the pen glyph on the hologram's tool ring; pick the ink and width below it.",
       "camera": {
         "spin": "Auto-spin speed"
       }
@@ -106,7 +118,7 @@
       "SharesHint": "Shared parts are the same on every hologram in this link, on any scene. Unlinking keeps what the hologram shows now.",
       "Share": {
         "content": "Content",
-        "annotations": "Waypoints",
+        "annotations": "Waypoints & drawings",
         "view": "View",
         "look": "Look"
       },
@@ -115,6 +127,7 @@
       "Create": "New link from this hologram",
       "Hint": "A link lets several holograms share their content, waypoints, view or look, e.g. three map tables or thirty notice boards. Links are journal entries in the Holo Links folder.",
       "Missing": "This hologram's link (journal entry) no longer exists, so it shows its own settings."
-    }
+    },
+    "StrokeLimit": "This hologram already has {max} drawings; clear some first."
   }
 }

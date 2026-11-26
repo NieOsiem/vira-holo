@@ -291,3 +291,80 @@
   min-height: 7em;
   resize: vertical;
 }
+
+/* ---- Ink strip: ink (and stroke width) picker under the active tool glyph, part of the ring ---- */
+#hud .vira-holo-ring .vira-holo-strip {
+  --dot: calc(var(--glyph-size) * 0.3);
+  position: absolute;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: calc(var(--dot) * 0.5);
+  padding: calc(var(--dot) * 0.35) calc(var(--dot) * 0.6);
+  pointer-events: auto;
+  white-space: nowrap;
+  background: rgb(26 15 6 / 0.6);
+  border: 1px solid color-mix(in srgb, var(--holo-color) 32%, transparent);
+  border-radius: var(--dot);
+  box-shadow: 0 0 calc(var(--dot) * 1.1) color-mix(in srgb, var(--holo-color) 22%, transparent);
+  animation: vira-holo-strip-in 0.2s ease-out both;
+}
+#hud .vira-holo-ring .vira-holo-strip::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background: repeating-linear-gradient(0deg, rgb(255 225 160 / 0.07) 0 1px, transparent 1px 3px);
+}
+#hud .vira-holo-ring .vira-holo-strip button,
+#hud .vira-holo-ring .vira-holo-strip input.custom {
+  all: unset;
+  position: relative;
+  box-sizing: border-box;
+  width: var(--dot);
+  height: var(--dot);
+  border-radius: 50%;
+  cursor: pointer;
+  transition: transform 0.14s, box-shadow 0.14s;
+}
+#hud .vira-holo-ring .vira-holo-strip [data-ink] {
+  background: var(--ink);
+  color: var(--ink);
+  border: 1px solid rgb(255 255 255 / 0.22);
+}
+#hud .vira-holo-ring .vira-holo-strip input.custom {
+  overflow: hidden;
+  border: 1px solid rgb(255 255 255 / 0.22);
+  background: conic-gradient(#ff4d5e, #ffb020, #ffe066, #8dff57, #35f0ff, #5b8cff, #ff3df0, #ff4d5e);
+}
+#hud .vira-holo-ring .vira-holo-strip input.custom::-webkit-color-swatch-wrapper,
+#hud .vira-holo-ring .vira-holo-strip input.custom::-webkit-color-swatch { opacity: 0; }
+#hud .vira-holo-ring .vira-holo-strip .separator {
+  width: 1px;
+  height: var(--dot);
+  background: color-mix(in srgb, var(--holo-color) 35%, transparent);
+}
+/* Width tiers: a dot of the stroke's own thickness. */
+#hud .vira-holo-ring .vira-holo-strip [data-width] {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: color-mix(in srgb, var(--holo-color) 70%, white);
+}
+#hud .vira-holo-ring .vira-holo-strip [data-width] span {
+  width: calc(var(--dot) * (0.15 + var(--tier) * 0.17));
+  height: calc(var(--dot) * (0.15 + var(--tier) * 0.17));
+  border-radius: 50%;
+  background: currentColor;
+}
+#hud .vira-holo-ring .vira-holo-strip button:hover,
+#hud .vira-holo-ring .vira-holo-strip input.custom:hover { transform: scale(1.25); }
+#hud .vira-holo-ring .vira-holo-strip [data-ink].on,
+#hud .vira-holo-ring .vira-holo-strip [data-width].on {
+  box-shadow: 0 0 0 calc(var(--dot) * 0.15) rgb(255 255 255 / 0.9), 0 0 calc(var(--dot) * 0.6) currentColor;
+}
+@keyframes vira-holo-strip-in {
+  from { opacity: 0; transform: translate(-50%, 20%); }
+  to { opacity: 1; transform: translateX(-50%); }
+}

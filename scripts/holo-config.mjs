@@ -1,5 +1,5 @@
 import {LINK_SECTIONS, MODULE_ID, defaultCamera, getHoloData} from "./data.mjs";
-import {editMarkers} from "./annotations.mjs";
+import {editAnnotations} from "./annotations.mjs";
 import {createLink, joinLink, leaveLink, linkChoices, writeHolo} from "./links.mjs";
 
 const {HandlebarsApplicationMixin, DocumentSheetV2} = foundry.applications.api;
@@ -37,6 +37,7 @@ export default class HoloConfig extends HandlebarsApplicationMixin(DocumentSheet
     actions: {
       resetView: HoloConfig.#onResetView,
       clearMarkers: HoloConfig.#onClearMarkers,
+      clearStrokes: HoloConfig.#onClearStrokes,
       createLink: HoloConfig.#onCreateLink,
       joinLink: HoloConfig.#onJoinLink,
       leaveLink: HoloConfig.#onLeaveLink,
@@ -102,6 +103,7 @@ export default class HoloConfig extends HandlebarsApplicationMixin(DocumentSheet
       terrainSliders: sliders("terrain"),
       cameraSliders: sliders("camera"),
       markerCount: holo.annotations.markers.length,
+      strokeCount: holo.annotations.strokes.length,
       players: game.users.filter(u => !u.isGM).map(u => ({id: u.id, name: u.name, owner: holo.owners.includes(u.id)}))
     });
   }
@@ -155,7 +157,15 @@ export default class HoloConfig extends HandlebarsApplicationMixin(DocumentSheet
       window: {title: "VIRAHOLO.Config.clearMarkers"},
       content: `<p>${game.i18n.localize("VIRAHOLO.Config.clearMarkersConfirm")}</p>`
     });
-    if ( confirmed ) await editMarkers(this.document, {type: "clear"});
+    if ( confirmed ) await editAnnotations(this.document, "markers", {type: "clear"});
+  }
+
+  static async #onClearStrokes() {
+    const confirmed = await foundry.applications.api.DialogV2.confirm({
+      window: {title: "VIRAHOLO.Config.clearStrokes"},
+      content: `<p>${game.i18n.localize("VIRAHOLO.Config.clearStrokesConfirm")}</p>`
+    });
+    if ( confirmed ) await editAnnotations(this.document, "strokes", {type: "clear"});
   }
 
   static async #onResetView() {

@@ -48,7 +48,12 @@ export const DEFAULTS = Object.freeze({
      * Waypoints: {id, u, v, label, glyph, color, size, locked}. u/v is the position on the image (0..1, top-left
      * origin); size is a tier from 1 (small) to 3 (large); locked pins can't be dragged.
      */
-    markers: []
+    markers: [],
+    /**
+     * Freehand ink: {id, color, width, points}. points is a flat [u, v, u, v, ...] list on the image (like
+     * waypoints), so strokes stay on the surface as it turns and follow the terrain; width is a tier from 1 to 3.
+     */
+    strokes: []
   },
   text: {
     content: "",
@@ -163,6 +168,11 @@ export const MAX_MARKERS = 64;
 export const MAX_LABEL_LENGTH = 32;
 /** Pin size tiers: tier → scale of the largest pin. */
 export const MARKER_SIZES = Object.freeze({1: 0.5, 2: 0.72, 3: 1});
+/** Every edit rewrites the whole stroke list (like waypoints), so keep it bounded. */
+export const MAX_STROKES = 100;
+export const MAX_STROKE_POINTS = 400;
+/** Stroke width tiers: tier → line width relative to a medium stroke. */
+export const STROKE_WIDTHS = Object.freeze({1: 0.5, 2: 1, 3: 1.8});
 
 /**
  * The ink that stands out most against a hologram colour (largest hue difference), for new waypoints.
@@ -203,5 +213,23 @@ export function sanitizeMarker(marker) {
     color: /^#[0-9a-f]{6}$/i.test(color) ? color : INKS[0],
     size: (size in MARKER_SIZES) ? Number(size) : 3,
     locked: locked === true
+  };
+}
+
+/**
+ * A stroke with every field checked and coerced, like sanitizeMarker. Points are rounded to 1/10000 of the image.
+ * @param {object} stroke
+ * @returns {object|null}   Null without an ID or at least two finite points
+ */
+export function sanitizeStroke(stroke) {
+  const {id, color, width, points} = stroke ?? {};
+  if ( (typeof id !== "string") || !/^[a-zA-Z0-9]{16}$/.test(id) || !Array.isArray(points) ) return null;
+  const count = Math.min(Math.floor(points.length / 2), MAX_STROKE_POINTS);
+  if ( (count < 2) || !points.slice(0, count * 2).every(Number.isFinite) ) return null;
+  return {
+    id,
+    color: /^#[0-9a-f]{6}$/i.test(color) ? color : INKS[0],
+    width: (width in STROKE_WIDTHS) ? Number(width) : 2,
+    points: points.slice(0, count * 2).map(p => Math.round(Math.clamp(p, 0, 1) * 10000) / 10000)
   };
 }

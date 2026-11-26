@@ -1,4 +1,4 @@
-import {getHoloData} from "./data.mjs";
+import {INKS, STROKE_WIDTHS, getHoloData} from "./data.mjs";
 
 /** Stroke glyphs in the style of the original mockup. */
 const GLYPHS = {
@@ -7,6 +7,7 @@ const GLYPHS = {
   spin: '<path d="M3.5 12a8.5 8.5 0 0 1 14.4-6.1L21 8"/><path d="M21 3.2V8h-4.8"/>'
     + '<path d="M20.5 12a8.5 8.5 0 0 1-14.4 6.1L3 16"/><path d="M3 20.8V16h4.8"/>',
   waypoint: '<path d="M20 10c0 6-8 12-8 12S4 16 4 10a8 8 0 0 1 16 0z"/><circle cx="12" cy="10" r="2.8"/>',
+  draw: '<path d="M17 3a2.8 2.8 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/>',
   settings: '<path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/>'
     + '<circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/>'
 };
@@ -15,7 +16,17 @@ const ARC_STEP = 0.24;
 /** Glyphs sit on this fraction of the projection ellipse. */
 const ARC_RADIUS = 0.8;
 
-/** @type {{tile: Tile, element: HTMLElement, buttons: HTMLButtonElement[]}|null} */
+/**
+ * @typedef {object} StripOptions
+ * @property {string} glyph                    The tool glyph the strip sits under
+ * @property {string} ink                      Selected ink
+ * @property {number} [width]                  Selected stroke width tier; omit to hide the widths
+ * @property {(ink: string) => void} onInk
+ * @property {(width: number) => void} [onWidth]
+ */
+
+/** @type {{tile: Tile, element: HTMLElement, buttons: HTMLButtonElement[], strip: HTMLElement|null,
+ *          stripGlyph: string|null}|null} */
 let ring = null;
 
 /**
@@ -29,12 +40,13 @@ export function showRing(tile, actions) {
   hideRing();
   const element = document.createElement("div");
   element.className = "vira-holo-ring";
-  const names = ["recenter", "spin", "waypoint", ...(game.user.isGM ? ["settings"] : [])];
+  const names = ["recenter", "spin", "waypoint", "draw", ...(game.user.isGM ? ["settings"] : [])];
   const buttons = names.map((name, index) => {
     const button = document.createElement("button");
     button.type = "button";
     button.dataset.glyph = name;
     button.dataset.tooltip = `VIRAHOLO.Ring.${name}`;
+    button.dataset.tooltipDirection = "UP"; // The ink strip sits below
     button.setAttribute("aria-label", game.i18n.localize(`VIRAHOLO.Ring.${name}`));
     button.style.setProperty("--index", index);
     button.innerHTML = `<span class="glyph"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" `
@@ -46,7 +58,7 @@ export function showRing(tile, actions) {
     element.append(button);
     return button;
   });
-  ring = {tile, element, buttons};
+  ring = {tile, element, buttons, strip: null, stripGlyph: null};
   refreshRing();
 }
 
@@ -64,6 +76,58 @@ export function setGlyphOn(name, on) {
   const button = ring?.element.querySelector(`[data-glyph="${name}"]`);
   button?.classList.toggle("on", on);
   button?.setAttribute("aria-pressed", String(on));
+}
+
+/**
+ * Show the ink picker under a tool glyph (and stroke widths, for the pen), or hide it.
+ * @param {StripOptions|null} options
+ */
+export function setStrip(options) {
+  if ( !ring ) return;
+  ring.strip?.remove();
+  ring.strip = null;
+  ring.stripGlyph = options?.glyph ?? null;
+  if ( !options ) return;
+  const {ink, width, onInk, onWidth} = options;
+  const localize = key => game.i18n.localize(`VIRAHOLO.Ring.${key}`);
+  const strip = document.createElement("div");
+  strip.className = "vira-holo-strip";
+  strip.innerHTML = INKS.map(color => `<button type="button" data-ink="${color}" style="--ink: ${color}"
+    aria-label="${localize("ink")} ${color}"></button>`).join("")
+    + `<input type="color" class="custom" value="${ink}" aria-label="${localize("customInk")}"
+      data-tooltip="${localize("customInk")}">`
+    + ((width === undefined) ? "" : `<span class="separator"></span>${Object.keys(STROKE_WIDTHS).map(tier => `<button
+      type="button" data-width="${tier}" style="--tier: ${tier}" aria-label="${localize(`width.${tier}`)}"
+      data-tooltip="${localize(`width.${tier}`)}"><span></span></button>`).join("")}`);
+  const select = (attribute, value) => {
+    for ( const button of strip.querySelectorAll(`[${attribute}]`) ) {
+      const on = button.getAttribute(attribute).toLowerCase() === String(value).toLowerCase();
+      button.classList.toggle("on", on);
+      button.setAttribute("aria-pressed", String(on));
+    }
+  };
+  for ( const button of strip.querySelectorAll("[data-ink]") ) {
+    button.addEventListener("click", () => {
+      select("data-ink", button.dataset.ink);
+      onInk(button.dataset.ink);
+    });
+  }
+  const custom = strip.querySelector(".custom");
+  custom.addEventListener("input", () => {
+    select("data-ink", custom.value);
+    onInk(custom.value);
+  });
+  for ( const button of strip.querySelectorAll("[data-width]") ) {
+    button.addEventListener("click", () => {
+      select("data-width", button.dataset.width);
+      onWidth?.(Number(button.dataset.width));
+    });
+  }
+  select("data-ink", ink);
+  if ( width !== undefined ) select("data-width", width);
+  ring.strip = strip;
+  ring.element.append(strip);
+  refreshRing();
 }
 
 /** Did this event happen on the ring? */
@@ -94,6 +158,11 @@ export function refreshRing(tile) {
     const y = Math.sin(angle) * (height / 2) * ARC_RADIUS;
     button.style.left = `${cx + (x * Math.cos(turn)) - (y * Math.sin(turn)) - (size / 2)}px`;
     button.style.top = `${cy + (x * Math.sin(turn)) + (y * Math.cos(turn)) - (size / 2)}px`;
+    if ( button.dataset.glyph === ring.stripGlyph ) {
+      // Centred under its glyph; the strip's own size follows --glyph-size.
+      ring.strip.style.left = `${parseFloat(button.style.left) + (size / 2)}px`;
+      ring.strip.style.top = `${parseFloat(button.style.top) + (size * 1.05)}px`;
+    }
     if ( button.dataset.glyph === "spin" ) {
       button.classList.toggle("on", camera.spin !== 0);
       button.setAttribute("aria-pressed", String(camera.spin !== 0));

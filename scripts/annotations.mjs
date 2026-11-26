@@ -1,69 +1,79 @@
-import {MAX_MARKERS, getHoloData, sanitizeMarker} from "./data.mjs";
+import {MAX_MARKERS, MAX_STROKES, getHoloData, sanitizeMarker, sanitizeStroke} from "./data.mjs";
 import {storageOf, writeHolo} from "./links.mjs";
-import {requestMarkerEdit} from "./socket.mjs";
+import {requestAnnotationEdit} from "./socket.mjs";
+
+/** The editable annotation lists, with their size limit and the check every item goes through. */
+const LISTS = {
+  markers: {max: MAX_MARKERS, sanitize: sanitizeMarker},
+  strokes: {max: MAX_STROKES, sanitize: sanitizeStroke}
+};
 
 /**
- * @type {Map<string, Promise>} Pending edits per storing document (the tile, or its link's journal when waypoints
+ * @type {Map<string, Promise>} Pending edits per storing document (the tile, or its link's journal when annotations
  * are shared), applied one after another.
  */
 const queues = new Map();
 
 /**
- * @typedef {{type: "add", marker: object}|{type: "update", id: string, changes: object}
- *          |{type: "delete", id: string}|{type: "clear"}} MarkerEdit
+ * @typedef {{type: "add", item: object}|{type: "update", id: string, changes: object}
+ *          |{type: "delete", id: string}|{type: "clear"}} AnnotationEdit
  */
 
 /**
- * Add, change or remove waypoints. GMs apply the edit themselves; drivers ask the active GM.
+ * Add, change or remove waypoints ("markers") or strokes. GMs apply the edit themselves; drivers ask the active GM.
  * Edits are operations rather than whole lists, so two people editing at once don't overwrite each other.
  * @param {TileDocument} doc
- * @param {MarkerEdit} edit
+ * @param {"markers"|"strokes"} list
+ * @param {AnnotationEdit} edit
  */
-export function editMarkers(doc, edit) {
-  if ( game.user.isGM ) return applyMarkerEdit(doc, edit);
-  return requestMarkerEdit(doc, edit);
+export function editAnnotations(doc, list, edit) {
+  if ( game.user.isGM ) return applyAnnotationEdit(doc, list, edit);
+  return requestAnnotationEdit(doc, list, edit);
 }
 
 /**
- * Apply an edit on this (GM) client, after any edits to the same tile still in flight.
+ * Apply an edit on this (GM) client, after any edits to the same document still in flight.
  * @param {TileDocument} doc
- * @param {MarkerEdit} edit
+ * @param {string} list
+ * @param {AnnotationEdit} edit
  */
-export function applyMarkerEdit(doc, edit) {
+export function applyAnnotationEdit(doc, list, edit) {
+  if ( !Object.hasOwn(LISTS, list) ) return;
   const key = storageOf(doc, "annotations").uuid;
   const previous = queues.get(key) ?? Promise.resolve();
-  const next = previous.then(() => applyNow(doc, edit)).catch(err => console.error("Vira Holo |", err));
+  const next = previous.then(() => applyNow(doc, list, edit)).catch(err => console.error("Vira Holo |", err));
   queues.set(key, next);
   return next;
 }
 
-async function applyNow(doc, edit) {
+async function applyNow(doc, list, edit) {
   if ( !doc.parent?.tiles.has(doc.id) ) return; // Deleted meanwhile
-  const markers = foundry.utils.deepClone(getHoloData(doc).annotations.markers);
-  const index = markers.findIndex(m => m.id === edit.id);
+  const {max, sanitize} = LISTS[list];
+  const items = foundry.utils.deepClone(getHoloData(doc).annotations[list]);
+  const index = items.findIndex(m => m.id === edit.id);
   switch ( edit.type ) {
     case "add": {
-      const marker = sanitizeMarker(edit.marker);
-      if ( !marker || (markers.length >= MAX_MARKERS) || markers.some(m => m.id === marker.id) ) return;
-      markers.push(marker);
+      const item = sanitize(edit.item);
+      if ( !item || (items.length >= max) || items.some(m => m.id === item.id) ) return;
+      items.push(item);
       break;
     }
     case "update": {
       if ( index < 0 ) return;
-      const marker = sanitizeMarker({...markers[index], ...edit.changes, id: markers[index].id});
-      if ( !marker ) return;
-      markers[index] = marker;
+      const item = sanitize({...items[index], ...edit.changes, id: items[index].id});
+      if ( !item ) return;
+      items[index] = item;
       break;
     }
     case "delete":
       if ( index < 0 ) return;
-      markers.splice(index, 1);
+      items.splice(index, 1);
       break;
     case "clear":
-      markers.length = 0;
+      items.length = 0;
       break;
     default:
       return;
   }
-  await writeHolo(doc, {annotations: {markers}});
+  await writeHolo(doc, {annotations: {[list]: items}});
 }

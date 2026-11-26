@@ -1,5 +1,6 @@
 import {getHoloData} from "./data.mjs";
 import MarkerLayer from "./marker-layer.mjs";
+import StrokeLayer from "./stroke-layer.mjs";
 import TextPanel from "./text-panel.mjs";
 
 const TAU = Math.PI * 2;
@@ -19,27 +20,36 @@ const SCANLINE_SPACING = 6;
 const STEM_HEIGHT = 0.16;
 /** Longest side of the CPU copy of a heightmap, used to stand waypoints on the terrain and to pick points on it. */
 const HEIGHT_SAMPLES = 512;
+/** How long a stroke sent to the GM keeps showing while its save is on the way. */
+const PENDING_STROKE_MS = 3000;
 /** Approximate number of wireframe lines across the terrain in each direction. */
 const WIRE_LINES = 40;
 const CONTOUR_LEVELS = 12;
 
 /**
  * Projects an object-space point (x right, y up, z away from the default viewer) through the orbit camera.
- * The perspective divide is left to the GPU (w = view depth) so varyings interpolate perspective-correctly.
+ * view() gives camera space with y pointing down the render texture; project() leaves the perspective divide to the
+ * GPU (w = view depth) so varyings interpolate perspective-correctly.
  */
 const PROJECT = `
-vec4 project(vec3 p) {
+vec3 view(vec3 p) {
   p.xz -= uTarget;
   float cy = cos(uCamera.x), sy = sin(uCamera.x), cp = cos(uCamera.y), sp = sin(uCamera.y);
   float x = p.x * cy + p.z * sy;
   float z1 = p.z * cy - p.x * sy;
   float y = p.y * cp + z1 * sp;
   float z = z1 * cp - p.y * sp;
-  vDepth = z;
-  float w = z + uCamera.z;
-  vec2 offset = vec2(x, -y) * ${FOCAL.toFixed(2)} * uCamera.w;
+  return vec3(x, -y, z);
+}
+// offset: pixels from the centre, times w (the GPU divides by w).
+vec4 clipFrom(vec2 offset, float w) {
   vec3 clip = projectionMatrix * translationMatrix * vec3(uCenter * w + offset, w);
   return vec4(clip.xy, 0.0, w);
+}
+vec4 project(vec3 p) {
+  vec3 v = view(p);
+  vDepth = v.z;
+  return clipFrom(v.xy * ${FOCAL.toFixed(2)} * uCamera.w, v.z + uCamera.z);
 }`;
 
 const CAMERA_UNIFORMS = `
@@ -199,13 +209,82 @@ void main() {
   fragColor = vec4(uColor * (0.8 + 0.6 * vHeight) * a, a * 0.15);
 }`;
 
+/**
+ * Strokes: each point of a polyline is two vertices, pushed apart across the line in render-texture pixels, so lines
+ * keep their on-screen width at any zoom. Neighbouring points give the direction; joins are mitred (clamped).
+ */
+const STROKE_VERTEX = `
+precision highp float;
+attribute vec3 aVertexPosition;
+attribute vec3 aPrev;
+attribute vec3 aNext;
+attribute float aSide;
+attribute vec3 aColor;
+attribute float aWidth;
+${CAMERA_UNIFORMS}
+uniform float uWidth; // half width in render-texture pixels of a medium stroke
+uniform float uWidthScale;
+varying vec3 vColor;
+varying float vEdge;
+varying float vHalf;
+varying float vDepth;
+${PROJECT}
+vec2 pixels(vec3 v) {
+  return v.xy * ${FOCAL.toFixed(2)} * uCamera.w / (v.z + uCamera.z);
+}
+void main() {
+  vec3 v = view(aVertexPosition);
+  vec2 here = pixels(v);
+  vec2 back = here - pixels(view(aPrev));
+  vec2 ahead = pixels(view(aNext)) - here;
+  float lb = length(back);
+  float la = length(ahead);
+  vec2 d1 = lb > 1e-4 ? back / lb : (la > 1e-4 ? ahead / la : vec2(1.0, 0.0));
+  vec2 d2 = la > 1e-4 ? ahead / la : d1;
+  vec2 t = d1 + d2;
+  t = length(t) > 1e-4 ? normalize(t) : d1;
+  vec2 miter = vec2(-t.y, t.x);
+  float halfWidth = aWidth * uWidth * uWidthScale;
+  float extent = halfWidth + 1.0; // one pixel more for antialiasing
+  float stretch = 1.0 / max(dot(miter, vec2(-d1.y, d1.x)), 0.5);
+  vEdge = aSide * extent;
+  vHalf = halfWidth;
+  vColor = aColor;
+  vDepth = v.z;
+  float w = v.z + uCamera.z;
+  gl_Position = clipFrom((here + miter * aSide * extent * stretch) * w, w);
+}`;
+
+const STROKE_FRAGMENT = `
+precision highp float;
+varying vec3 vColor;
+varying float vEdge;
+varying float vHalf;
+varying float vDepth;
+uniform float uOpacity;
+uniform float uFlicker;
+uniform float uAlpha;
+uniform float uSoft; // 1 for the glow pass: fades out across the whole width
+${VOLUME}
+void main() {
+  float d = abs(vEdge);
+  float hard = clamp(vHalf + 0.5 - d, 0.0, 1.0);
+  float soft = 1.0 - smoothstep(0.0, vHalf + 1.0, d);
+  float depth = mix(1.0, 0.6, clamp((vDepth + 1.0) * 0.5, 0.0, 1.0));
+  float a = mix(hard, soft * soft, uSoft) * uAlpha * uOpacity * uFlicker * depth * volumeFade();
+  // A hot, whiter core; the glow keeps the ink's own colour.
+  vec3 color = mix(vColor, vec3(1.0), 0.3 * (1.0 - uSoft));
+  gl_FragColor = vec4(color * a, a * 0.85);
+}`;
+
 let programs;
 function getPrograms() {
   programs ??= {
     panel: PIXI.Program.from(VERTEX, PANEL_FRAGMENT, "vira-holo-panel"),
     disc: PIXI.Program.from(VERTEX, DISC_FRAGMENT, "vira-holo-disc"),
     terrain: PIXI.Program.from(TERRAIN_VERTEX, TERRAIN_FRAGMENT, "vira-holo-terrain"),
-    wire: PIXI.Program.from(TERRAIN_VERTEX, WIRE_FRAGMENT, "vira-holo-wire")
+    wire: PIXI.Program.from(TERRAIN_VERTEX, WIRE_FRAGMENT, "vira-holo-wire"),
+    stroke: PIXI.Program.from(STROKE_VERTEX, STROKE_FRAGMENT, "vira-holo-stroke")
   };
   return programs;
 }
@@ -313,7 +392,7 @@ export default class HoloRenderer {
     this.color = new Float32Array(3);
     this.state = new PIXI.State();
 
-    const {panel, disc} = getPrograms();
+    const {panel, disc, stroke} = getPrograms();
     this.discGeometry = createQuad();
     setQuad(this.discGeometry, DISC_RADIUS, 0, DISC_RADIUS, [-1, 1, 1, 1, 1, -1, -1, -1]);
     // The projector stays put on the floor: panning and zooming only move the content across and above it.
@@ -327,7 +406,12 @@ export default class HoloRenderer {
     this.discMesh = new PIXI.Mesh(this.discGeometry, this.discShader, this.state);
     this.stage = new PIXI.Container();
     this.markerLayer = new MarkerLayer();
-    this.stage.addChild(this.discMesh, this.panelMesh, this.markerLayer.container);
+    const strokeUniforms = {uCamera: this.cameraUniform, uTarget: this.targetUniform, uCenter: this.centerUniform,
+      uVolume: this.volumeUniform};
+    this.strokeLayer = new StrokeLayer(stroke, strokeUniforms, this.state);
+    this.liveStrokeLayer = new StrokeLayer(stroke, strokeUniforms, this.state);
+    this.stage.addChild(this.discMesh, this.panelMesh);
+    this.#addOverlays();
     this.configure();
   }
 
@@ -356,6 +440,16 @@ export default class HoloRenderer {
   #liveMarkers = new Map();
   /** Waypoint whose card is open on this client. */
   selectedMarker = null;
+  /** The stroke this client is drawing right now. */
+  #liveStroke = null;
+  #liveStrokeVersion = 0;
+  /** @type {Map<string, {stroke: object, until: number}>} Strokes sent to the GM, shown until their save arrives. */
+  #pendingStrokes = new Map();
+
+  /** Strokes and waypoints go on top of the content, waypoints last. */
+  #addOverlays() {
+    this.stage.addChild(this.strokeLayer.container, this.liveStrokeLayer.container, this.markerLayer.container);
+  }
 
   #lookUniforms(extra={}) {
     return {
@@ -514,7 +608,7 @@ export default class HoloRenderer {
       ]
     };
     this.stage.addChild(...this.#terrain.meshes);
-    this.stage.addChild(this.markerLayer.container); // Keep waypoints on top
+    this.#addOverlays();
   }
 
   #destroyTerrain() {
@@ -582,6 +676,7 @@ export default class HoloRenderer {
     disc.uOpacity = look.opacity;
     disc.uFlicker = this.#flicker;
     disc.uDashPhase = (seconds * 0.5) % 1;
+    this.#layoutStrokes(showTerrain);
     this.#layoutMarkers(pitch);
   }
 
@@ -640,6 +735,43 @@ export default class HoloRenderer {
   setLiveMarker(id, position) {
     if ( position ) this.#liveMarkers.set(id, position);
     else this.#liveMarkers.delete(id);
+  }
+
+  /**
+   * Show the stroke being drawn on this client (call again after adding points), or stop showing it.
+   * @param {object|null} stroke
+   */
+  setLiveStroke(stroke) {
+    this.#liveStroke = stroke;
+    this.#liveStrokeVersion++;
+  }
+
+  /** Keep showing a finished stroke until the GM's save brings it back (or it never does). */
+  addPendingStroke(stroke) {
+    this.#pendingStrokes.set(stroke.id, {stroke, until: performance.now() + PENDING_STROKE_MS});
+  }
+
+  /** Saved strokes plus this client's pending ones, rebuilt into meshes only when they or the surface change. */
+  #layoutStrokes(showTerrain) {
+    const {look, terrain, annotations: {strokes: saved}} = this.data;
+    const now = performance.now();
+    const ids = new Set(saved.map(s => s.id));
+    for ( const [id, {until}] of this.#pendingStrokes ) {
+      if ( ids.has(id) || (now > until) ) this.#pendingStrokes.delete(id);
+    }
+    const strokes = [...saved, ...Array.from(this.#pendingStrokes.values(), p => p.stroke)];
+    // On terrain, segments are split per grid cell so lines follow the relief.
+    const onTerrain = showTerrain && !!this.#heights;
+    const step = onTerrain ? 1 / (Math.clamp(Math.round(terrain.resolution), 16, 256) - 1) : 0;
+    const shape = [this.#hx, this.#hz, look.lift, onTerrain ? terrain.relief : 0, step].join();
+    const surface = (u, v) => this.#surfacePosition(u, v);
+    this.strokeLayer.sync(strokes, `${shape}|${strokes.map(s => s.id).join()}`, surface, step);
+    const live = this.#liveStroke ? [this.#liveStroke] : [];
+    this.liveStrokeLayer.sync(live, `${shape}|${this.#liveStrokeVersion}`, surface, step);
+    const rt = this.renderTexture;
+    const style = {opacity: look.opacity, flicker: this.#flicker, width: Math.clamp(Math.min(rt.width, rt.height) * 0.0022, 1, 5)};
+    this.strokeLayer.update(style);
+    this.liveStrokeLayer.update(style);
   }
 
   /** Object-space position of an image point on the hologram's surface. */
@@ -818,6 +950,8 @@ export default class HoloRenderer {
     this.#textPanel?.destroy();
     this.#destroyTerrain();
     this.markerLayer.destroy();
+    this.strokeLayer.destroy();
+    this.liveStrokeLayer.destroy();
     this.stage.destroy({children: true});
     destroyGeometries(this.discGeometry, this.panelGeometry);
     this.renderTexture.destroy(true);

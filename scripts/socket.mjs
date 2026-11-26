@@ -1,5 +1,5 @@
 import {MODULE_ID, canDrive} from "./data.mjs";
-import {applyMarkerEdit} from "./annotations.mjs";
+import {applyAnnotationEdit} from "./annotations.mjs";
 import {writeHolo} from "./links.mjs";
 import {showLiveCamera} from "./tile-holo.mjs";
 
@@ -13,7 +13,7 @@ export function registerSocket() {
     const sender = game.users.get(senderId);
     if ( message?.action === "camera" ) onCamera(message, sender);
     else if ( message?.action === "save" ) onSave(message, sender);
-    else if ( message?.action === "markers" ) onMarkers(message, sender);
+    else if ( message?.action === "annotations" ) onAnnotations(message, sender);
   });
 }
 
@@ -25,13 +25,14 @@ function activeGM() {
 }
 
 /**
- * Ask the active GM to apply a waypoint edit.
+ * Ask the active GM to apply a waypoint or stroke edit.
  * @param {TileDocument} doc
- * @param {import("./annotations.mjs").MarkerEdit} edit
+ * @param {"markers"|"strokes"} list
+ * @param {import("./annotations.mjs").AnnotationEdit} edit
  */
-export function requestMarkerEdit(doc, edit) {
+export function requestAnnotationEdit(doc, list, edit) {
   const gm = activeGM();
-  if ( gm ) game.socket.emit(EVENT, {action: "markers", uuid: doc.uuid, edit}, {recipients: [gm.id]});
+  if ( gm ) game.socket.emit(EVENT, {action: "annotations", uuid: doc.uuid, list, edit}, {recipients: [gm.id]});
 }
 
 /**
@@ -69,11 +70,11 @@ function onSave({uuid, changes}, sender) {
   writeHolo(doc, sanitize(changes));
 }
 
-function onMarkers({uuid, edit}, sender) {
+function onAnnotations({uuid, list, edit}, sender) {
   if ( game.user !== game.users.activeGM ) return;
   const doc = fromUuidSync(uuid, {strict: false});
-  if ( !doc || !canDrive(sender, doc) || (typeof edit !== "object") ) return;
-  applyMarkerEdit(doc, edit); // Every field is sanitized there
+  if ( !doc || !canDrive(sender, doc) || !edit || (typeof edit !== "object") ) return;
+  applyAnnotationEdit(doc, list, edit); // The list name and every field are checked there
 }
 
 /** Only the fields a driver may change, and only as finite numbers. */

@@ -1,9 +1,10 @@
-import {DEFAULTS, MARKER_GLYPHS, canDrive, contrastingInk, defaultCamera} from "./data.mjs";
-import {editMarkers} from "./annotations.mjs";
+import {DEFAULTS, MARKER_GLYPHS, MAX_STROKES, MAX_STROKE_POINTS, canDrive, contrastingInk, defaultCamera} from "./data.mjs";
+import {editAnnotations} from "./annotations.mjs";
 import HoloConfig from "./holo-config.mjs";
 import {MAX_DIST, MAX_PITCH, MIN_DIST, MIN_PITCH} from "./holo-renderer.mjs";
 import {closeCard, isCardEvent, openCard, updateCard} from "./pin-card.mjs";
-import {hideRing, isRingEvent, refreshRing, setGlyphOn, showRing} from "./ring.mjs";
+import {hideRing, isRingEvent, refreshRing, setGlyphOn, setStrip, showRing} from "./ring.mjs";
+import {simplifyStroke} from "./stroke-layer.mjs";
 import {getHolograms, showLiveCamera} from "./tile-holo.mjs";
 import {broadcastCamera, saveDriverChanges} from "./socket.mjs";
 
@@ -16,11 +17,15 @@ const WHEEL_SAVE_DELAY = 400;
 const DOUBLE_CLICK_MS = 350;
 /** Movement (screen pixels) under which a press counts as a click rather than a drag. */
 const CLICK_SLOP = 4;
+/** Screen pixels the pointer moves before a stroke gets its next point. */
+const STROKE_SPACING = 3;
+/** How far (in image UV) a point may stray from a straight run before it's kept when a stroke is simplified. */
+const STROKE_TOLERANCE = 0.001;
 
 /**
  * @type {{tile: Tile, holo: HoloRenderer, pointerId: number, pan: boolean, pressed: string|null,
- *         marker: string|null, x: number, y: number, start: object, camera: object, position: object|null,
- *         moved: boolean, lastSent: number}|null}
+ *         marker: string|null, stroke: object|null, x: number, y: number, last: {x: number, y: number},
+ *         start: object, camera: object, position: object|null, moved: boolean, lastSent: number}|null}
  */
 let drag = null;
 /**
@@ -28,8 +33,14 @@ let drag = null;
  * it. Pressing anywhere else lets it go.
  */
 let engaged = null;
-/** While on, clicking the engaged hologram's surface places a waypoint. */
-let waypointTool = false;
+/**
+ * The engaged hologram's active tool: "waypoint" (a click places a pin), "draw" (a drag inks the surface) or null.
+ * @type {string|null}
+ */
+let tool = null;
+/** Ink this client picked for new pins and strokes; null uses the one that stands out most on the hologram. */
+let ink = null;
+let strokeWidth = 2;
 let lastClick = {tile: null, time: 0};
 let wheelSave = null;
 
@@ -56,19 +67,36 @@ export function registerInteraction() {
 /** @param {{tile: Tile, holo: HoloRenderer}|null} hit */
 function setEngaged(hit) {
   engaged = hit?.tile ?? null;
-  waypointTool = false;
+  tool = null;
   closeCard();
   if ( !hit ) return hideRing();
   const {tile, holo} = hit;
   showRing(tile, {
     recenter: () => recenter(tile, holo),
     spin: () => toggleSpin(tile, holo),
-    waypoint: () => {
-      waypointTool = !waypointTool;
-      setGlyphOn("waypoint", waypointTool);
-    },
+    waypoint: () => toggleTool("waypoint", holo),
+    draw: () => toggleTool("draw", holo),
     settings: () => HoloConfig.open(tile.document)
   });
+}
+
+/** Switch a ring tool on (switching the other off) or off, with the ink strip under it while on. */
+function toggleTool(name, holo) {
+  tool = (tool === name) ? null : name;
+  setGlyphOn("waypoint", tool === "waypoint");
+  setGlyphOn("draw", tool === "draw");
+  if ( !tool ) return setStrip(null);
+  setStrip({
+    glyph: tool,
+    ink: currentInk(holo),
+    width: (tool === "draw") ? strokeWidth : undefined,
+    onInk: color => ink = color,
+    onWidth: width => strokeWidth = width
+  });
+}
+
+function currentInk(holo) {
+  return ink ?? contrastingInk(holo.data.look.color);
 }
 
 function swallow(event) {
@@ -140,8 +168,10 @@ function onPointerDown(event) {
   if ( document.activeElement instanceof HTMLElement ) document.activeElement.blur();
   const {tile, holo} = hit;
   holo.dragging = true;
+  // With the pen, a press on the surface starts a stroke (pins underneath are drawn over, not picked).
+  const stroke = ((tool === "draw") && !event.shiftKey) ? startStroke(holo, canvasPoint(event)) : null;
   // A pressed pin opens its card on click; it's only dragged when unlocked (a locked pin lets the drag orbit).
-  const pressed = holo.markerAt(holo.toTexturePoint(canvasPoint(event)));
+  const pressed = stroke ? null : holo.markerAt(holo.toTexturePoint(canvasPoint(event)));
   const locked = !!holo.markers.find(m => m.id === pressed)?.locked;
   drag = {
     tile, holo,
@@ -149,8 +179,10 @@ function onPointerDown(event) {
     pan: event.shiftKey,
     pressed,
     marker: locked ? null : pressed,
+    stroke,
     x: event.clientX,
     y: event.clientY,
+    last: {x: event.clientX, y: event.clientY},
     start: {...holo.camera},
     camera: {...holo.camera},
     position: null,
@@ -162,6 +194,7 @@ function onPointerDown(event) {
 function onPointerMove(event) {
   if ( !drag || (event.pointerId !== drag.pointerId) ) return;
   swallow(event);
+  if ( drag.stroke ) return extendStroke(event);
   const dx = event.clientX - drag.x;
   const dy = event.clientY - drag.y;
   if ( !drag.moved && (Math.hypot(dx, dy) < CLICK_SLOP) ) return;
@@ -194,14 +227,16 @@ function onPointerMove(event) {
 function onPointerUp(event) {
   if ( !drag || (event.pointerId !== drag.pointerId) ) return;
   swallow(event);
-  const {tile, holo, camera, moved, pressed, marker, position} = drag;
+  const {tile, holo, camera, moved, pressed, marker, position, stroke} = drag;
   drag = null;
   holo.dragging = false;
+  if ( stroke ) holo.setLiveStroke(null);
   if ( tile.destroyed ) return; // Deleted, or the scene changed, mid-drag
 
+  if ( stroke ) return finishStroke(tile, holo, stroke);
   if ( pressed && !moved ) return openMarkerCard(tile, holo, pressed);
   if ( marker ) {
-    if ( position ) editMarkers(tile.document, {type: "update", id: marker, changes: position});
+    if ( position ) editAnnotations(tile.document, "markers", {type: "update", id: marker, changes: position});
     return;
   }
   if ( moved ) {
@@ -211,7 +246,7 @@ function onPointerUp(event) {
   }
 
   // A click on the hologram itself.
-  if ( waypointTool ) return placeMarker(tile, holo, canvasPoint(event));
+  if ( tool === "waypoint" ) return placeMarker(tile, holo, canvasPoint(event));
   closeCard();
   const now = performance.now();
   if ( (lastClick.tile === tile) && (now - lastClick.time < DOUBLE_CLICK_MS) ) {
@@ -225,16 +260,52 @@ function onPointerUp(event) {
 function placeMarker(tile, holo, point) {
   const position = holo.surfaceAt(holo.toTexturePoint(point));
   if ( !position ) return;
-  const color = contrastingInk(holo.data.look.color);
-  const marker = {id: foundry.utils.randomID(), ...position, label: "", glyph: MARKER_GLYPHS[0], color};
-  editMarkers(tile.document, {type: "add", marker});
+  const marker = {id: foundry.utils.randomID(), ...position, label: "", glyph: MARKER_GLYPHS[0], color: currentInk(holo)};
+  editAnnotations(tile.document, "markers", {type: "add", item: marker});
   openMarkerCard(tile, holo, marker.id);
+}
+
+/**
+ * Begin a stroke where a press meets the surface.
+ * @returns {object|null}   Null off the surface (the press orbits instead) or when the hologram is full
+ */
+function startStroke(holo, point) {
+  const position = holo.surfaceAt(holo.toTexturePoint(point));
+  if ( !position ) return null;
+  if ( holo.data.annotations.strokes.length >= MAX_STROKES ) {
+    ui.notifications.warn(game.i18n.format("VIRAHOLO.StrokeLimit", {max: MAX_STROKES}));
+    return null;
+  }
+  const stroke = {id: foundry.utils.randomID(), color: currentInk(holo), width: strokeWidth, points: [position.u, position.v]};
+  holo.setLiveStroke(stroke);
+  return stroke;
+}
+
+/** Add the pointer's surface point to the stroke being drawn, every few screen pixels. */
+function extendStroke(event) {
+  const {holo, stroke, last} = drag;
+  if ( Math.hypot(event.clientX - last.x, event.clientY - last.y) < STROKE_SPACING ) return;
+  if ( stroke.points.length >= MAX_STROKE_POINTS * 20 ) return; // Raw points; far fewer survive simplifying
+  // Off the surface (past its edge) the stroke waits for the pointer to come back.
+  const position = holo.surfaceAt(holo.toTexturePoint(canvasPoint(event)));
+  if ( !position ) return;
+  drag.last = {x: event.clientX, y: event.clientY};
+  stroke.points.push(position.u, position.v);
+  holo.setLiveStroke(stroke);
+}
+
+/** Save a finished stroke, simplified, and keep showing it until the save comes back. A plain click draws nothing. */
+function finishStroke(tile, holo, stroke) {
+  if ( stroke.points.length < 4 ) return;
+  stroke.points = simplifyStroke(stroke.points, STROKE_TOLERANCE, MAX_STROKE_POINTS);
+  holo.addPendingStroke(stroke);
+  editAnnotations(tile.document, "strokes", {type: "add", item: stroke});
 }
 
 function openMarkerCard(tile, holo, id) {
   openCard(tile, holo, id, {
-    update: changes => editMarkers(tile.document, {type: "update", id, changes}),
-    remove: () => editMarkers(tile.document, {type: "delete", id}),
+    update: changes => editAnnotations(tile.document, "markers", {type: "update", id, changes}),
+    remove: () => editAnnotations(tile.document, "markers", {type: "delete", id}),
     focus: () => {
       const marker = holo.markers.find(m => m.id === id);
       if ( !marker ) return;

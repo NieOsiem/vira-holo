@@ -98,7 +98,7 @@
   </fieldset>
 
   <fieldset>
-    <legend>{{localize "VIRAHOLO.Config.Waypoints"}}</legend>
+    <legend>{{localize "VIRAHOLO.Config.Annotations"}}</legend>
     <div class="form-group">
       <label for="{{partId}}-labels">{{localize "VIRAHOLO.Config.look.labels"}}</label>
       <div class="form-fields">
@@ -114,6 +114,16 @@
         </button>
       </div>
       <p class="hint">{{localize "VIRAHOLO.Config.markersHint"}}</p>
+    </div>
+    <div class="form-group">
+      <label>{{localize "VIRAHOLO.Config.strokeCount"}}</label>
+      <div class="form-fields">
+        <span class="vira-holo-count">{{strokeCount}}</span>
+        <button type="button" data-action="clearStrokes" {{disabled (not strokeCount)}}>
+          <i class="fa-solid fa-trash" inert></i> {{localize "VIRAHOLO.Config.clearStrokes"}}
+        </button>
+      </div>
+      <p class="hint">{{localize "VIRAHOLO.Config.strokesHint"}}</p>
     </div>
   </fieldset>
 
