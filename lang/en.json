@@ -76,7 +76,8 @@
         "flicker": "Flicker",
         "lift": "Float height",
         "projector": "Projector disc",
-        "labels": "Show labels"
+        "labels": "Show labels",
+        "motes": "Data motes"
       },
       "Annotations": "Waypoints & drawings",
       "markerCount": "Waypoints",

@@ -32,6 +32,8 @@ export const DEFAULTS = Object.freeze({
     lift: 0.12,
     /** Show the projector disc under the hologram. */
     projector: true,
+    /** Density of the specks of light rising through the hologram (0 = none). */
+    motes: 0.5,
     /** Show waypoint labels. */
     labels: true
   },
@@ -74,7 +76,7 @@ export const DEFAULTS = Object.freeze({
 
 /** Defaults that differ per mode: signs face the viewer, hold still and have no projector disc. */
 const MODE_DEFAULTS = Object.freeze({
-  text: {interactive: false, camera: {yaw: 0, pitch: Math.PI / 2, spin: 0}, look: {projector: false}}
+  text: {interactive: false, camera: {yaw: 0, pitch: Math.PI / 2, spin: 0}, look: {projector: false, motes: 0}}
 });
 
 /**

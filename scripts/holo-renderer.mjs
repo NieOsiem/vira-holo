@@ -28,6 +28,10 @@ const MEASURE_DASHES = 14;
 /** Approximate number of wireframe lines across the terrain in each direction. */
 const WIRE_LINES = 40;
 const CONTOUR_LEVELS = 12;
+/** Most data motes, at full density. */
+const MAX_MOTES = 160;
+/** Mote animation repeats every this many seconds; each mote rises a whole number of times per period. */
+const MOTE_PERIOD = 20;
 
 /**
  * Projects an object-space point (x right, y up, z away from the default viewer) through the orbit camera.
@@ -287,6 +291,58 @@ void main() {
   gl_FragColor = vec4(color * a, a * 0.85);
 }`;
 
+/**
+ * Data motes: specks of light rising through the hologram. Each starts over at a new spot when it reaches the top.
+ * Everything is derived from a shared phase, so every client sees the same motes and the CPU does nothing per frame.
+ */
+const MOTE_VERTEX = `
+precision highp float;
+attribute vec4 aVertexPosition; // spot seeds (x, z), start offset, size
+attribute vec2 aRate;           // rises per period (a whole number), position in the density order (0..1)
+${CAMERA_UNIFORMS}
+uniform vec2 uExtent;     // footprint half size (x, z)
+uniform vec2 uHeight;     // bottom of the rise and its height
+uniform float uPhase;     // 0..1 over the animation period
+uniform float uDensity;   // fraction of motes shown
+uniform float uPointScale;
+varying float vRise;
+varying float vDepth;
+${PROJECT}
+float hash(float n) {
+  return fract(sin(n) * 43758.5453);
+}
+void main() {
+  if ( aRate.y >= uDensity ) {
+    gl_Position = vec4(2.0, 2.0, 2.0, 1.0); // Outside the clip volume: not drawn
+    gl_PointSize = 1.0;
+    return;
+  }
+  float t = aVertexPosition.z + uPhase * aRate.x;
+  vRise = fract(t);
+  // The rise count wraps with the period (a whole number of rises), so the spot never jumps mid-rise.
+  float cycle = mod(floor(t), aRate.x);
+  vec2 spot = vec2(hash(aVertexPosition.x * 91.7 + cycle * 7.13), hash(aVertexPosition.y * 53.3 + cycle * 3.71));
+  vec3 p = vec3((spot.x * 2.0 - 1.0) * uExtent.x, uHeight.x + vRise * uHeight.y, (spot.y * 2.0 - 1.0) * uExtent.y);
+  gl_Position = project(p);
+  gl_PointSize = aVertexPosition.w * uPointScale * uCamera.z / gl_Position.w;
+}`;
+
+const MOTE_FRAGMENT = `
+precision highp float;
+varying float vRise;
+varying float vDepth;
+uniform vec3 uColor;
+uniform float uOpacity;
+uniform float uFlicker;
+${VOLUME}
+void main() {
+  float d = length(gl_PointCoord - 0.5) * 2.0;
+  float glow = 1.0 - smoothstep(0.15, 1.0, d);
+  float a = glow * (1.0 - vRise) * smoothstep(0.0, 0.08, vRise) * 0.6 * uOpacity * uFlicker * volumeFade();
+  // Emitted light: barely any alpha, so motes brighten what is behind them rather than covering it.
+  gl_FragColor = vec4(mix(uColor, vec3(1.0), 0.45) * a, a * 0.2);
+}`;
+
 let programs;
 function getPrograms() {
   programs ??= {
@@ -294,7 +350,8 @@ function getPrograms() {
     disc: PIXI.Program.from(VERTEX, DISC_FRAGMENT, "vira-holo-disc"),
     terrain: PIXI.Program.from(TERRAIN_VERTEX, TERRAIN_FRAGMENT, "vira-holo-terrain"),
     wire: PIXI.Program.from(TERRAIN_VERTEX, WIRE_FRAGMENT, "vira-holo-wire"),
-    stroke: PIXI.Program.from(STROKE_VERTEX, STROKE_FRAGMENT, "vira-holo-stroke")
+    stroke: PIXI.Program.from(STROKE_VERTEX, STROKE_FRAGMENT, "vira-holo-stroke"),
+    mote: PIXI.Program.from(MOTE_VERTEX, MOTE_FRAGMENT, "vira-holo-mote")
   };
   return programs;
 }
@@ -397,6 +454,31 @@ function readHeights(texture) {
   return {width, height, data};
 }
 
+/**
+ * Mote seeds, the same on every client for a given tile (seeded from its ID), so everyone sees the same motes.
+ * @param {string} seed
+ */
+function createMotes(seed) {
+  let state = [...seed].reduce((h, c) => Math.imul(h ^ c.charCodeAt(0), 16777619), 2166136261) >>> 0;
+  const random = () => { // mulberry32
+    state = (state + 0x6D2B79F5) >>> 0;
+    let t = state;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  const seeds = new Float32Array(MAX_MOTES * 4);
+  const rates = new Float32Array(MAX_MOTES * 2);
+  for ( let i = 0; i < MAX_MOTES; i++ ) {
+    seeds.set([random(), random(), random(), 0.7 + (random() * 1.3)], i * 4);
+    // 4 to 13 rises per 20 s period: 1.5 to 5 seconds to the top, as in the mockup.
+    rates.set([4 + Math.floor(random() * 10), (i + 0.5) / MAX_MOTES], i * 2);
+  }
+  return new PIXI.Geometry()
+    .addAttribute("aVertexPosition", seeds, 4)
+    .addAttribute("aRate", rates, 2);
+}
+
 /** Destroy geometries together with their (possibly shared) GPU buffers, which Geometry#destroy leaves alive. */
 function destroyGeometries(...geometries) {
   const buffers = new Set(geometries.flatMap(g => g.buffers));
@@ -419,7 +501,7 @@ export default class HoloRenderer {
     this.color = new Float32Array(3);
     this.state = new PIXI.State();
 
-    const {panel, disc, stroke} = getPrograms();
+    const {panel, disc, stroke, mote} = getPrograms();
     this.discGeometry = createQuad();
     setQuad(this.discGeometry, DISC_RADIUS, 0, DISC_RADIUS, [-1, 1, 1, 1, 1, -1, -1, -1]);
     // The projector stays put on the floor: panning and zooming only move the content across and above it.
@@ -431,6 +513,13 @@ export default class HoloRenderer {
     this.panelShader = new PIXI.Shader(panel, this.#lookUniforms({uPanelShape: new Float32Array([1, 1])}));
     this.panelMesh = new PIXI.Mesh(this.panelGeometry, this.panelShader, this.state);
     this.discMesh = new PIXI.Mesh(this.discGeometry, this.discShader, this.state);
+    this.moteGeometry = createMotes(tile.document.id);
+    this.moteShader = new PIXI.Shader(mote, {
+      uCamera: this.cameraUniform, uTarget: this.targetUniform, uCenter: this.centerUniform, uColor: this.color,
+      uVolume: this.volumeUniform, uExtent: new Float32Array(2), uHeight: new Float32Array(2),
+      uPhase: 0, uDensity: 0, uPointScale: 1, uOpacity: 1, uFlicker: 1
+    });
+    this.moteMesh = new PIXI.Mesh(this.moteGeometry, this.moteShader, this.state, PIXI.DRAW_MODES.POINTS);
     this.stage = new PIXI.Container();
     this.markerLayer = new MarkerLayer();
     const strokeUniforms = {uCamera: this.cameraUniform, uTarget: this.targetUniform, uCenter: this.centerUniform,
@@ -489,7 +578,7 @@ export default class HoloRenderer {
 
   /** Strokes, measurements and waypoints go on top of the content, waypoints last. */
   #addOverlays() {
-    this.stage.addChild(this.strokeLayer.container, this.liveStrokeLayer.container, this.measureLines.container,
+    this.stage.addChild(this.moteMesh, this.strokeLayer.container, this.liveStrokeLayer.container, this.measureLines.container,
       this.liveMeasureLines.container, this.measureLabels.container, this.markerLayer.container);
   }
 
@@ -719,8 +808,26 @@ export default class HoloRenderer {
     disc.uOpacity = look.opacity;
     disc.uFlicker = this.#flicker;
     disc.uDashPhase = (seconds * 0.5) % 1;
+    this.#updateMotes(showTerrain, seconds);
     this.#layoutLines(showTerrain);
     this.#layoutMarkers(pitch);
+  }
+
+  #updateMotes(showTerrain, seconds) {
+    const {look, terrain} = this.data;
+    const density = Math.clamp(look.motes, 0, 1);
+    this.moteMesh.visible = density > 0;
+    if ( !this.moteMesh.visible ) return;
+    const rt = this.renderTexture;
+    const uniforms = this.moteShader.uniforms;
+    uniforms.uDensity = density;
+    uniforms.uPhase = (seconds / MOTE_PERIOD) % 1;
+    uniforms.uExtent.set([this.#hx * 0.95, this.#hz * 0.95]);
+    // They rise from the floating surface to a little above the highest terrain.
+    uniforms.uHeight.set([look.lift, (showTerrain ? terrain.relief : 0) + 0.4]);
+    uniforms.uPointScale = Math.min(rt.width, rt.height) / 250;
+    uniforms.uOpacity = look.opacity;
+    uniforms.uFlicker = this.#flicker;
   }
 
   /** The camera in effect: a live (unsaved) one while being dragged, otherwise the saved one. */
@@ -1189,8 +1296,9 @@ export default class HoloRenderer {
     this.measureLines.destroy();
     this.liveMeasureLines.destroy();
     this.measureLabels.destroy();
+    this.moteMesh.destroy();
     this.stage.destroy({children: true});
-    destroyGeometries(this.discGeometry, this.panelGeometry);
+    destroyGeometries(this.discGeometry, this.panelGeometry, this.moteGeometry);
     this.renderTexture.destroy(true);
   }
 }

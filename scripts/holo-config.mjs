@@ -12,7 +12,8 @@ const SLIDERS = {
     ["solidity", 0, 1, 0.05],
     ["scanlines", 0, 1, 0.05],
     ["flicker", 0, 1, 0.05],
-    ["lift", 0, 0.5, 0.01]
+    ["lift", 0, 0.5, 0.01],
+    ["motes", 0, 1, 0.05]
   ],
   camera: [
     ["spin", -0.5, 0.5, 0.01]
