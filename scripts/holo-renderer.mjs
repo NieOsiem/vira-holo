@@ -35,6 +35,10 @@ const STEM_HEIGHT = 0.16;
 const HEIGHT_SAMPLES = 512;
 /** How long a new or erased stroke or measurement shows that way here while the GM saves it. */
 const PENDING_MS = 3000;
+/** Time constant (ms) with which another user's camera is eased towards, between their 30-per-second updates. */
+const CAMERA_EASE_MS = 40;
+/** How long another user's stroke or measurement in progress stays shown without news from them. */
+const REMOTE_PREVIEW_MS = 3000;
 /** Dashes per footprint unit along a measurement line. */
 const MEASURE_DASHES = 14;
 /** Approximate number of wireframe lines across the terrain in each direction. */
@@ -613,6 +617,8 @@ export default class HoloRenderer {
   /** Unsaved camera shown while someone drags the hologram (locally or on another client). */
   #liveCamera = null;
   #liveUntil = 0;
+  /** Another user's camera, which the live camera is eased towards. */
+  #liveTarget = null;
   #dragging = false;
   /** Yaw currently on screen, including auto-spin. */
   displayYaw = 0;
@@ -641,6 +647,10 @@ export default class HoloRenderer {
   /** The measurement this client is making right now: {points}. */
   #liveMeasure = null;
   #liveMeasureVersion = 0;
+  /** @type {Map<string, {stroke: object, until: number}>} Strokes other users are drawing right now, by user. */
+  #remoteStrokes = new Map();
+  /** @type {Map<string, {points: number[], until: number}>} Measurements other users are making, by user. */
+  #remoteMeasures = new Map();
   /** Measurement whose card is open on this client. */
   selectedMeasure = null;
   /** @type {Map<string, number[]>} Unsaved points of measurements whose ends are being moved. */
@@ -673,7 +683,12 @@ export default class HoloRenderer {
     this.data = data;
     // A saved change supersedes any live preview, except while this client is still dragging.
     if ( !this.#dragging ) {
-      this.#liveCamera = null;
+      // Another user's camera eases onto the saved one rather than jumping to it.
+      if ( this.#liveTarget ) {
+        this.#liveTarget = {...data.camera};
+        this.#liveUntil = performance.now() + 400;
+      }
+      else this.#liveCamera = null;
       this.#liveMarkers.clear();
       this.#liveMeasurePoints.clear();
     }
@@ -844,7 +859,11 @@ export default class HoloRenderer {
    */
   update(deltaMS) {
     const {look, terrain} = this.data;
-    if ( this.#liveCamera && !this.#dragging && (performance.now() > this.#liveUntil) ) this.#liveCamera = null;
+    if ( this.#liveCamera && !this.#dragging && (performance.now() > this.#liveUntil) ) {
+      this.#liveCamera = null;
+      this.#liveTarget = null;
+    }
+    if ( this.#liveCamera && this.#liveTarget ) this.#easeCamera(deltaMS);
     const camera = this.camera;
     const seconds = game.time.serverTime / 1000;
     this.displayYaw = (camera.yaw + this.spinPhase(camera.spin)) % TAU;
@@ -951,11 +970,35 @@ export default class HoloRenderer {
   /**
    * Show an unsaved camera until a saved change arrives or `hold` ms pass.
    * @param {object} camera
-   * @param {number} [hold=5000]
+   * @param {object} [options]
+   * @param {number} [options.hold=5000]
+   * @param {boolean} [options.smooth=false]  Ease towards it (another user's camera, which arrives in steps)
    */
-  setLiveCamera(camera, hold=5000) {
-    this.#liveCamera = {...this.data.camera, ...camera};
+  setLiveCamera(camera, {hold=5000, smooth=false}={}) {
+    const target = {...this.data.camera, ...camera};
     this.#liveUntil = performance.now() + hold;
+    if ( !smooth ) {
+      this.#liveCamera = target;
+      this.#liveTarget = null;
+      return;
+    }
+    this.#liveCamera ??= {...this.data.camera};
+    this.#liveTarget = target;
+  }
+
+  /** Move the live camera part of the way to another user's, yaw the short way round. */
+  #easeCamera(deltaMS) {
+    const current = this.#liveCamera;
+    const target = this.#liveTarget;
+    // A spin toggle keeps the hologram where it is on screen (as on the driver's side): change yaw to match.
+    if ( current.spin !== target.spin ) {
+      current.yaw += this.spinPhase(current.spin) - this.spinPhase(target.spin);
+      current.spin = target.spin;
+    }
+    const k = 1 - Math.exp(-deltaMS / CAMERA_EASE_MS);
+    for ( const key of ["pitch", "dist", "x", "z"] ) current[key] += (target[key] - current[key]) * k;
+    const turn = ((((target.yaw - current.yaw) % TAU) + (TAU * 1.5)) % TAU) - (TAU / 2);
+    current.yaw += turn * k;
   }
 
   /** While this client drags, keep its live camera even if other flag updates arrive. */
@@ -1120,6 +1163,67 @@ export default class HoloRenderer {
   }
 
   /**
+   * Show what another user is doing mid-drag (see socket.mjs for the shapes; everything is sanitized there).
+   * @param {string} userId
+   * @param {object} preview
+   */
+  applyPreview(userId, preview) {
+    const until = performance.now() + REMOTE_PREVIEW_MS;
+    switch ( preview.kind ) {
+      case "marker":
+        this.setLiveMarker(preview.id, {u: preview.u, v: preview.v});
+        break;
+      case "measurePoints":
+        this.setLiveMeasurePoints(preview.id, preview.points);
+        break;
+      case "stroke": {
+        // Strokes arrive in pieces: each continues where the last ended.
+        const {id, color, width, from, points} = preview;
+        const entry = (from === 0) ? {stroke: {id, color, width, points: []}} : this.#remoteStrokes.get(userId);
+        if ( !entry || (entry.stroke.id !== id) || (entry.stroke.points.length !== from) ) return;
+        entry.stroke.points.push(...points);
+        entry.until = until;
+        this.#remoteStrokes.set(userId, entry);
+        this.#liveStrokeVersion++;
+        break;
+      }
+      case "strokeEnd":
+        this.#remoteStrokes.delete(userId);
+        this.#liveStrokeVersion++;
+        if ( preview.stroke ) this.addPending("strokes", preview.stroke);
+        break;
+      case "measure":
+        this.#remoteMeasures.set(userId, {points: preview.points, until});
+        this.#liveMeasureVersion++;
+        break;
+      case "measureEnd":
+        this.#remoteMeasures.delete(userId);
+        this.#liveMeasureVersion++;
+        if ( preview.measure ) this.addPending("measures", preview.measure);
+        break;
+    }
+  }
+
+  /** Forget other users' previews they stopped updating (they left, or lost the connection). */
+  #expirePreviews() {
+    const now = performance.now();
+    for ( const [map, bump] of [[this.#remoteStrokes, () => this.#liveStrokeVersion++],
+      [this.#remoteMeasures, () => this.#liveMeasureVersion++]] ) {
+      for ( const [userId, {until}] of map ) {
+        if ( now <= until ) continue;
+        map.delete(userId);
+        bump();
+      }
+    }
+  }
+
+  /** This client's measurement in progress and other users', with "live" IDs (never picked). */
+  get #liveMeasures() {
+    const own = this.#liveMeasure ? [{id: "live", ...this.#liveMeasure}] : [];
+    return [...own, ...Array.from(this.#remoteMeasures, ([userId, {points}]) => ({id: `live:${userId}`, points}))];
+  }
+
+  /**
    * Keep showing a new stroke or measurement until the GM's save brings it back (or it never does).
    * @param {"strokes"|"measures"} list
    * @param {object} item
@@ -1198,17 +1302,18 @@ export default class HoloRenderer {
     const key = items => `${shape}|${items.map(s => s.id).join()}`;
     const asLine = ({id, points}) => ({id, points, color: MEASURE_INK, width: 1});
 
+    this.#expirePreviews();
     const strokes = this.#shown("strokes");
     this.strokeLayer.sync(strokes, key(strokes), surface, step);
-    const liveStroke = this.#liveStroke ? [this.#liveStroke] : [];
-    this.liveStrokeLayer.sync(liveStroke, `${shape}|${this.#liveStrokeVersion}`, surface, step);
+    const liveStrokes = [...(this.#liveStroke ? [this.#liveStroke] : []),
+      ...Array.from(this.#remoteStrokes.values(), entry => entry.stroke)];
+    this.liveStrokeLayer.sync(liveStrokes, `${shape}|${this.#liveStrokeVersion}`, surface, step);
     // Measurements are straight lines between their two surface points, through hills rather than over them.
     const live = this.#liveMeasurePoints;
     const measures = this.#shown("measures").map(m => (live.has(m.id) ? {...m, points: live.get(m.id)} : m));
     const moved = Array.from(live, ([id, points]) => `${id}:${points.join()}`).join();
     this.measureLines.sync(measures.map(asLine), `${key(measures)}|${moved}`, surface, 0);
-    const liveMeasure = this.#liveMeasure ? [asLine({id: "live", ...this.#liveMeasure})] : [];
-    this.liveMeasureLines.sync(liveMeasure, `${shape}|${this.#liveMeasureVersion}`, surface, 0);
+    this.liveMeasureLines.sync(this.#liveMeasures.map(asLine), `${shape}|${this.#liveMeasureVersion}`, surface, 0);
 
     this.#strokeHalfWidth = Math.clamp(Math.min(this.width, this.height) * 0.0022, 1, 5);
     const style = {
@@ -1224,7 +1329,7 @@ export default class HoloRenderer {
   /** Endpoint dots and distance labels, placed with the camera as drawn this frame. */
   #layoutMeasureLabels(measures) {
     const size = Math.clamp(Math.min(this.width, this.height) * 0.016, 6, 24);
-    const all = this.#liveMeasure ? [...measures, {id: "live", ...this.#liveMeasure}] : measures;
+    const all = [...measures, ...this.#liveMeasures];
     const labels = all.map(({id, points}) => ({id, text: this.#distanceLabel(points)}));
     const sprites = this.measureLabels.sync(labels, size, this.selectedMeasure, this.resolution);
     const project = this.#projector();
@@ -1281,7 +1386,7 @@ export default class HoloRenderer {
   /** The measurement whose label is under a render-texture point, if any. */
   measureAt(point) {
     const id = this.measureLabels.hitTest(point.x, point.y);
-    return (id === "live") ? null : id;
+    return id?.startsWith("live") ? null : id;
   }
 
   /**
@@ -1290,7 +1395,7 @@ export default class HoloRenderer {
    */
   measureEndAt(point) {
     const hit = this.measureLabels.endAt(point.x, point.y);
-    return (hit?.id === "live") ? null : hit;
+    return hit?.id.startsWith("live") ? null : hit;
   }
 
   /** Where a measurement's label is drawn (its top centre), in render-texture pixels. */

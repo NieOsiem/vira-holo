@@ -1,7 +1,8 @@
-import {DISPLAY_MODES, MODULE_ID, canDrive} from "./data.mjs";
+import {DISPLAY_MODES, INKS, MAX_STROKE_POINTS, MODULE_ID, STROKE_WIDTHS, canDrive, sanitizeMeasure,
+  sanitizeStroke} from "./data.mjs";
 import {applyAnnotationEdit} from "./annotations.mjs";
 import {writeHolo} from "./links.mjs";
-import {showLiveCamera} from "./tile-holo.mjs";
+import {showLiveCamera, showPreview} from "./tile-holo.mjs";
 
 const EVENT = `module.${MODULE_ID}`;
 const CAMERA_KEYS = ["yaw", "pitch", "dist", "x", "z", "spin"];
@@ -14,6 +15,7 @@ export function registerSocket() {
     if ( message?.action === "camera" ) onCamera(message, sender);
     else if ( message?.action === "save" ) onSave(message, sender);
     else if ( message?.action === "annotations" ) onAnnotations(message, sender);
+    else if ( message?.action === "preview" ) onPreview(message, sender);
   });
 }
 
@@ -45,6 +47,19 @@ export function broadcastCamera(doc, camera) {
 }
 
 /**
+ * Show everyone else an edit in progress (a pin or measurement end being dragged, a stroke or measurement being
+ * drawn). Nothing is saved; the edit itself still goes through the GM when it's done.
+ * @param {TileDocument} doc
+ * @param {object} preview   One of:
+ *   {kind: "marker", id, u, v}, {kind: "measurePoints", id, points},
+ *   {kind: "stroke", id, color, width, from, points} (the points after the first `from` numbers already sent),
+ *   {kind: "strokeEnd", id, stroke|null}, {kind: "measure", points}, {kind: "measureEnd", measure|null}
+ */
+export function broadcastPreview(doc, preview) {
+  game.socket.emit(EVENT, {action: "preview", uuid: doc.uuid, preview});
+}
+
+/**
  * Save what a driver changed (the camera, including auto-spin, and the terrain's display style). GMs write directly;
  * owners ask the active GM.
  * @param {TileDocument} doc
@@ -61,7 +76,55 @@ function onCamera({uuid, camera}, sender) {
   const doc = fromUuidSync(uuid, {strict: false});
   // The driven tile may be on another scene and still move a linked hologram on this one.
   if ( !doc || !canDrive(sender, doc) ) return;
-  showLiveCamera(doc, pickCamera(camera));
+  showLiveCamera(doc, pickCamera(camera), {smooth: true});
+}
+
+function onPreview({uuid, preview}, sender) {
+  const doc = fromUuidSync(uuid, {strict: false});
+  if ( !doc || !canDrive(sender, doc) ) return;
+  const clean = sanitizePreview(preview);
+  if ( clean ) showPreview(doc, sender.id, clean);
+}
+
+/** A preview with every field checked, or null. */
+function sanitizePreview(preview) {
+  const isId = id => (typeof id === "string") && /^[a-zA-Z0-9]{16}$/.test(id);
+  const unit = n => (Number.isFinite(n) ? Math.clamp(n, 0, 1) : null);
+  const units = (points, max) => {
+    if ( !Array.isArray(points) || (points.length % 2) || (points.length > max) ) return null;
+    const clean = points.map(unit);
+    return clean.includes(null) ? null : clean;
+  };
+  const {kind, id} = preview ?? {};
+  switch ( kind ) {
+    case "marker": {
+      const [u, v] = [unit(preview.u), unit(preview.v)];
+      return (isId(id) && (u !== null) && (v !== null)) ? {kind, id, u, v} : null;
+    }
+    case "measurePoints": {
+      const points = units(preview.points, 4);
+      return (isId(id) && (points?.length === 4)) ? {kind, id, points} : null;
+    }
+    case "measure": {
+      const points = units(preview.points, 4);
+      return (points?.length === 4) ? {kind, points} : null;
+    }
+    case "stroke": {
+      const points = units(preview.points, MAX_STROKE_POINTS * 2);
+      const {from} = preview;
+      const validFrom = Number.isInteger(from) && (from >= 0) && (from <= MAX_STROKE_POINTS * 40);
+      if ( !isId(id) || !points || !validFrom ) return null;
+      const color = /^#[0-9a-f]{6}$/i.test(preview.color) ? preview.color : INKS[0];
+      const width = (preview.width in STROKE_WIDTHS) ? Number(preview.width) : 2;
+      return {kind, id, color, width, from, points};
+    }
+    case "strokeEnd":
+      return isId(id) ? {kind, id, stroke: preview.stroke ? sanitizeStroke(preview.stroke) : null} : null;
+    case "measureEnd":
+      return {kind, measure: preview.measure ? sanitizeMeasure(preview.measure) : null};
+    default:
+      return null;
+  }
 }
 
 function onSave({uuid, changes}, sender) {

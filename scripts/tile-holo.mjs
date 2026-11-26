@@ -1,4 +1,5 @@
 import {MODULE_ID, getLink} from "./data.mjs";
+import {storageOf} from "./links.mjs";
 import HoloRenderer from "./holo-renderer.mjs";
 
 /** @type {Map<Tile, HoloRenderer>} */
@@ -20,13 +21,28 @@ export function getHolograms() {
  * Show an unsaved camera on a tile's hologram and on every hologram that shares its view through the same link.
  * @param {TileDocument} doc
  * @param {object} camera
+ * @param {object} [options]
+ * @param {boolean} [options.smooth=false]  Ease towards it (another user's camera)
  */
-export function showLiveCamera(doc, camera) {
+export function showLiveCamera(doc, camera, {smooth=false}={}) {
   const link = getLink(doc);
   const viewLink = link?.share.view ? link.journal.uuid : null;
   for ( const [tile, holo] of holograms ) {
     const sibling = viewLink && (holo.data.link?.uuid === viewLink) && holo.data.link.share.view;
-    if ( (tile.document === doc) || sibling ) holo.setLiveCamera(camera);
+    if ( (tile.document === doc) || sibling ) holo.setLiveCamera(camera, {smooth});
+  }
+}
+
+/**
+ * Show another user's edit in progress on every hologram that stores its annotations where this tile does.
+ * @param {TileDocument} doc
+ * @param {string} userId
+ * @param {object} preview   Sanitized
+ */
+export function showPreview(doc, userId, preview) {
+  const storage = storageOf(doc, "annotations").uuid;
+  for ( const [tile, holo] of holograms ) {
+    if ( storageOf(tile.document, "annotations").uuid === storage ) holo.applyPreview(userId, preview);
   }
 }
 

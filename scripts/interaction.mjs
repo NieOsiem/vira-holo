@@ -9,13 +9,14 @@ import {writeHolo} from "./links.mjs";
 import {hideRing, isRingEvent, refreshRing, setGlyphEnabled, setGlyphOn, setStrip, showRing} from "./ring.mjs";
 import {simplifyStroke} from "./stroke-layer.mjs";
 import {getHolograms, showLiveCamera} from "./tile-holo.mjs";
-import {broadcastCamera, saveDriverChanges} from "./socket.mjs";
+import {broadcastCamera, broadcastPreview, saveDriverChanges} from "./socket.mjs";
 
 /** Radians of yaw / pitch per screen pixel dragged. */
 const ORBIT_SPEED = 0.008;
 const PITCH_SPEED = 0.006;
 const ZOOM_STEP = 1.12;
-const BROADCAST_INTERVAL = 50;
+/** Milliseconds between live updates (camera, edits in progress) sent to other users: 30 per second. */
+const BROADCAST_INTERVAL = 33;
 const WHEEL_SAVE_DELAY = 400;
 const DOUBLE_CLICK_MS = 350;
 /** Movement (screen pixels) under which a press counts as a click rather than a drag. */
@@ -53,6 +54,9 @@ let ink = null;
 let strokeWidth = 2;
 /** Where a click-click measurement started ({u, v}), waiting for its second click. */
 let measureStart = null;
+/** The tile whose measurement in progress other users are being shown, so they can be told when it ends. */
+let measurePreviewTile = null;
+let lastPreview = 0;
 let lastClick = {tile: null, time: 0};
 let wheelSave = null;
 
@@ -146,6 +150,26 @@ function closeCards() {
 function cancelMeasure() {
   measureStart = null;
   if ( engaged ) getHolograms().get(engaged)?.setLiveMeasure(null);
+  endMeasurePreview(null);
+}
+
+/**
+ * Show other users an edit in progress, at most every BROADCAST_INTERVAL unless forced (first and last messages).
+ * @returns {boolean}   Whether it was sent
+ */
+function sendPreview(tile, preview, force=false) {
+  const now = performance.now();
+  if ( !force && (now - lastPreview < BROADCAST_INTERVAL) ) return false;
+  lastPreview = now;
+  broadcastPreview(tile.document, preview);
+  return true;
+}
+
+/** Tell other users this client's measurement in progress ended, with the measurement it saved, if any. */
+function endMeasurePreview(measure) {
+  if ( !measurePreviewTile ) return;
+  if ( !measurePreviewTile.destroyed ) sendPreview(measurePreviewTile, {kind: "measureEnd", measure}, true);
+  measurePreviewTile = null;
 }
 
 function onKeyDown(event) {
@@ -246,7 +270,8 @@ function onPointerDown(event) {
   const canOpenLabel = !pressed && !measureEnd
     && ((tool === null) || (tool === "adjust") || ((tool === "measure") && !measureStart));
   const label = canOpenLabel ? holo.measureAt(texturePoint) : null;
-  const measure = ((tool === "measure") && !event.shiftKey && !label) ? startMeasure(holo, texturePoint) : null;
+  const measuring = (tool === "measure") && !event.shiftKey && !label;
+  const measure = measuring ? startMeasure(tile, holo, texturePoint) : null;
   drag = {
     tile, holo,
     pointerId: event.pointerId,
@@ -258,7 +283,7 @@ function onPointerDown(event) {
     measureEnd,
     toolOn: !!tool,
     pen,
-    stroke: pen ? startStroke(holo, canvasPoint(event)) : null,
+    stroke: pen ? startStroke(tile, holo, canvasPoint(event)) : null,
     erasing,
     x: event.clientX,
     y: event.clientY,
@@ -287,8 +312,8 @@ function onPointerMove(event) {
   if ( !drag.moved && (Math.hypot(dx, dy) < CLICK_SLOP) ) return;
   drag.moved = true;
   const {start, camera, holo} = drag;
-  if ( drag.measure ) return moveMeasureEnd(holo, drag.measure, canvasPoint(event));
-  if ( drag.measureEnd ) return dragMeasureEnd(holo, drag.measureEnd, canvasPoint(event));
+  if ( drag.measure ) return moveMeasureEnd(drag.tile, holo, drag.measure, canvasPoint(event));
+  if ( drag.measureEnd ) return dragMeasureEnd(drag.tile, holo, drag.measureEnd, canvasPoint(event));
 
   // Dragging a waypoint slides it across the surface under the pointer.
   if ( drag.marker ) {
@@ -296,6 +321,7 @@ function onPointerMove(event) {
     if ( position ) {
       drag.position = position;
       holo.setLiveMarker(drag.marker, position);
+      sendPreview(drag.tile, {kind: "marker", id: drag.marker, ...position});
     }
     return;
   }
@@ -376,15 +402,25 @@ function placeMarker(tile, holo, point) {
 }
 
 /**
- * Begin a stroke where the pointer meets the surface.
+ * Begin a stroke where the pointer meets the surface, and start showing it to other users.
  * @returns {object|null}   Null off the surface
  */
-function startStroke(holo, point) {
+function startStroke(tile, holo, point) {
   const position = holo.surfaceAt(holo.toTexturePoint(point));
   if ( !position ) return null;
-  const stroke = {id: foundry.utils.randomID(), color: currentInk(holo), width: strokeWidth, points: [position.u, position.v]};
+  const stroke = {id: foundry.utils.randomID(), color: currentInk(holo), width: strokeWidth,
+    points: [position.u, position.v], sent: 0};
   holo.setLiveStroke(stroke);
+  sendStrokePoints(tile, stroke, true);
   return stroke;
+}
+
+/** Send other users the stroke's points they haven't had yet. */
+function sendStrokePoints(tile, stroke, force=false) {
+  const {id, color, width, points, sent} = stroke;
+  if ( sendPreview(tile, {kind: "stroke", id, color, width, from: sent, points: points.slice(sent)}, force) ) {
+    stroke.sent = points.length;
+  }
 }
 
 /**
@@ -392,9 +428,9 @@ function startStroke(holo, point) {
  * surface starts its stroke once the pointer reaches it.
  */
 function extendStroke(event) {
-  const {holo, stroke, last} = drag;
+  const {tile, holo, stroke, last} = drag;
   if ( !stroke ) {
-    drag.stroke = startStroke(holo, canvasPoint(event));
+    drag.stroke = startStroke(tile, holo, canvasPoint(event));
     drag.last = {x: event.clientX, y: event.clientY};
     return;
   }
@@ -406,6 +442,7 @@ function extendStroke(event) {
   drag.last = {x: event.clientX, y: event.clientY};
   stroke.points.push(position.u, position.v);
   holo.setLiveStroke(stroke);
+  sendStrokePoints(tile, stroke);
 }
 
 /**
@@ -423,9 +460,11 @@ function eraseAlong(tile, holo, from, to) {
 }
 
 /** Save a finished stroke, simplified, and keep showing it until the save comes back. A plain click draws nothing. */
-function finishStroke(tile, holo, stroke) {
-  if ( stroke.points.length < 4 ) return;
-  stroke.points = simplifyStroke(stroke.points, STROKE_TOLERANCE, MAX_STROKE_POINTS);
+function finishStroke(tile, holo, {id, color, width, points}) {
+  const stroke = (points.length < 4) ? null
+    : {id, color, width, points: simplifyStroke(points, STROKE_TOLERANCE, MAX_STROKE_POINTS)};
+  sendPreview(tile, {kind: "strokeEnd", id, stroke}, true);
+  if ( !stroke ) return;
   holo.addPending("strokes", stroke);
   history.edit(tile.document, "strokes", {type: "add", item: stroke});
 }
@@ -434,7 +473,7 @@ function finishStroke(tile, holo, stroke) {
  * Begin a measurement at a press on the surface, or finish one waiting for its second click there.
  * @returns {{a: object, b: object, second: boolean}|null}   Null off the surface or when the hologram is full
  */
-function startMeasure(holo, texturePoint) {
+function startMeasure(tile, holo, texturePoint) {
   const point = holo.surfaceAt(texturePoint);
   if ( !point ) return null;
   if ( !measureStart && (holo.data.annotations.measures.length >= MAX_MEASURES) ) {
@@ -442,27 +481,31 @@ function startMeasure(holo, texturePoint) {
     return null;
   }
   const measure = {a: measureStart ?? point, b: point, second: !!measureStart};
-  showMeasure(holo, measure);
+  showMeasure(tile, holo, measure, true);
   return measure;
 }
 
-function showMeasure(holo, {a, b}) {
-  holo.setLiveMeasure({points: [a.u, a.v, b.u, b.v]});
+/** Show the measurement in progress here and (every so often, or now if forced) to other users. */
+function showMeasure(tile, holo, {a, b}, force=false) {
+  const points = [a.u, a.v, b.u, b.v];
+  holo.setLiveMeasure({points});
+  measurePreviewTile = tile;
+  sendPreview(tile, {kind: "measure", points}, force);
 }
 
 /** Move the measurement's end to the surface under a canvas point (it stays put off the surface). */
-function moveMeasureEnd(holo, measure, point) {
+function moveMeasureEnd(tile, holo, measure, point) {
   const end = holo.surfaceAt(holo.toTexturePoint(point));
   if ( !end ) return;
   measure.b = end;
-  showMeasure(holo, measure);
+  showMeasure(tile, holo, measure);
 }
 
 /** While a measurement waits for its second click, its end follows the pointer. */
 function hoverMeasure(event) {
   if ( !measureStart || !engaged || (event.target !== canvas.app?.view) ) return;
   const holo = getHolograms().get(engaged);
-  if ( holo ) moveMeasureEnd(holo, {a: measureStart, b: measureStart}, canvasPoint(event));
+  if ( holo ) moveMeasureEnd(engaged, holo, {a: measureStart, b: measureStart}, canvasPoint(event));
 }
 
 /**
@@ -473,9 +516,11 @@ function finishMeasure(tile, holo, {a, b, second}, moved) {
     measureStart = a;
     return;
   }
+  const measure = (Math.hypot(b.u - a.u, b.v - a.v) < 1e-3) ? null
+    : {id: foundry.utils.randomID(), points: [a.u, a.v, b.u, b.v]};
+  endMeasurePreview(measure);
   cancelMeasure();
-  if ( Math.hypot(b.u - a.u, b.v - a.v) < 1e-3 ) return;
-  const measure = {id: foundry.utils.randomID(), points: [a.u, a.v, b.u, b.v]};
+  if ( !measure ) return;
   holo.addPending("measures", measure);
   history.edit(tile.document, "measures", {type: "add", item: measure});
 }
@@ -487,11 +532,12 @@ function grabMeasureEnd(holo, {id, end}) {
 }
 
 /** Slide the grabbed end across the surface under the pointer (it stays put off the surface). */
-function dragMeasureEnd(holo, measureEnd, point) {
+function dragMeasureEnd(tile, holo, measureEnd, point) {
   const position = holo.surfaceAt(holo.toTexturePoint(point));
   if ( !position ) return;
   measureEnd.points.splice(measureEnd.end * 2, 2, position.u, position.v);
   holo.setLiveMeasurePoints(measureEnd.id, [...measureEnd.points]);
+  sendPreview(tile, {kind: "measurePoints", id: measureEnd.id, points: [...measureEnd.points]});
 }
 
 function openMeasure(tile, holo, id) {
