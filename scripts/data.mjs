@@ -16,7 +16,7 @@ export const DEFAULTS = Object.freeze({
   /** Whether users who may drive the hologram can grab, orbit and zoom it on the canvas. */
   interactive: true,
   /** Going up to a parent map arrives centred and eases there from the spot the old map was at, instead of ending on it. */
-  recenterUp: false,
+  recenterUp: true,
   /** IDs of non-GM users who may drive the hologram. */
   owners: [],
   /**

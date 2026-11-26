@@ -19,6 +19,10 @@ const ZOOM_STEP = 1.12;
 /** Milliseconds between live updates (camera, edits in progress) sent to other users: 30 per second. */
 const BROADCAST_INTERVAL = 33;
 const WHEEL_SAVE_DELAY = 400;
+/** Entering a map first pans and zooms onto its portal for this long, then switches the map. */
+const ENTER_MS = 550;
+/** Camera distance when the view arrives at the portal, as a fraction of the starting one. */
+const ENTER_ZOOM = 0.7;
 const DOUBLE_CLICK_MS = 350;
 /** Movement (screen pixels) under which a press counts as a click rather than a drag. */
 const CLICK_SLOP = 4;
@@ -38,6 +42,8 @@ const STROKE_TOLERANCE = 0.001;
  *         start: object, camera: object, position: object|null, moved: boolean, lastSent: number}|null}
  */
 let drag = null;
+/** Whether the lead-in to entering a map is running (see zoomOnto). */
+let entering = false;
 /**
  * The hologram the user last pressed on. It shows the tool ring, and the wheel zooms it while the pointer is over
  * it. Pressing anywhere else lets it go.
@@ -410,11 +416,47 @@ function onPointerUp(event) {
  * @param {string} [uuid]
  */
 async function travel(tile, holo, uuid) {
-  if ( !uuid ) return;
+  if ( !uuid || entering ) return;
   setTool(null, holo); // The ring is rebuilt for the new map
   closeCards();
+  const portal = holo.data.map.children.find(c => c.uuid === uuid);
+  if ( portal ) await zoomOnto(tile, holo, portal);
+  if ( tile.destroyed ) return;
   const camera = await arrivalCamera(holo.data, uuid);
   saveDriverChanges(tile.document, {camera, map: uuid});
+}
+
+/**
+ * Ease the camera onto a portal and a little closer, as the lead-in to entering its map. Everyone watching sees it
+ * as a live camera.
+ */
+async function zoomOnto(tile, holo, {u, v}) {
+  const from = {...holo.camera};
+  const to = {...from, ...holo.surfaceTarget(u, v), dist: Math.max(from.dist * ENTER_ZOOM, MIN_DIST)};
+  entering = true;
+  holo.dragging = true; // Hold the live camera, whatever saved updates arrive meanwhile
+  try {
+    const start = performance.now();
+    let lastSent = 0;
+    for ( let t = 0; t < 1; ) {
+      await new Promise(resolve => requestAnimationFrame(resolve));
+      if ( tile.destroyed ) return;
+      const now = performance.now();
+      t = Math.min((now - start) / ENTER_MS, 1);
+      const eased = t * t * (3 - (2 * t));
+      const camera = {...from};
+      for ( const key of ["x", "z", "dist"] ) camera[key] = from[key] + ((to[key] - from[key]) * eased);
+      showLiveCamera(tile.document, camera);
+      if ( (now - lastSent >= BROADCAST_INTERVAL) || (t >= 1) ) {
+        lastSent = now;
+        broadcastCamera(tile.document, camera);
+      }
+    }
+  }
+  finally {
+    entering = false;
+    holo.dragging = false;
+  }
 }
 
 /** Drop a new waypoint where the click meets the hologram's surface, and open its card. */
