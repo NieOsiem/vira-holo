@@ -1,0 +1,31 @@
+<section class="tab scrollable{{#if tab.active}} active{{/if}}" data-group="{{tab.group}}" data-tab="{{tab.id}}">
+  <fieldset>
+    <legend>{{localize "VIRAHOLO.Config.Annotations"}}</legend>
+    <div class="form-group">
+      <label for="{{partId}}-labels">{{localize "VIRAHOLO.Config.look.labels"}}</label>
+      <div class="form-fields">
+        <input type="checkbox" id="{{partId}}-labels" name="{{flags}}.look.labels" {{checked holo.look.labels}}>
+      </div>
+    </div>
+    <div class="form-group">
+      <label>{{localize "VIRAHOLO.Config.markerCount"}}</label>
+      <div class="form-fields">
+        <span class="vira-holo-count">{{markerCount}}</span>
+        <button type="button" data-action="clearMarkers" {{disabled (not markerCount)}}>
+          <i class="fa-solid fa-trash" inert></i> {{localize "VIRAHOLO.Config.clearMarkers"}}
+        </button>
+      </div>
+      <p class="hint">{{localize "VIRAHOLO.Config.markersHint"}}</p>
+    </div>
+    <div class="form-group">
+      <label>{{localize "VIRAHOLO.Config.strokeCount"}}</label>
+      <div class="form-fields">
+        <span class="vira-holo-count">{{strokeCount}}</span>
+        <button type="button" data-action="clearStrokes" {{disabled (not strokeCount)}}>
+          <i class="fa-solid fa-trash" inert></i> {{localize "VIRAHOLO.Config.clearStrokes"}}
+        </button>
+      </div>
+      <p class="hint">{{localize "VIRAHOLO.Config.strokesHint"}}</p>
+    </div>
+  </fieldset>
+</section>

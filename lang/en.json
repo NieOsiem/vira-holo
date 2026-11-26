@@ -25,6 +25,13 @@
       "Open": "Hologram",
       "Title": "Hologram: {name}",
       "General": "Hologram",
+      "Tabs": {
+        "content": "Content",
+        "look": "Look",
+        "annotations": "Annotations",
+        "link": "Link",
+        "view": "View"
+      },
       "Look": "Look",
       "Control": "View & control",
       "enabled": "Show as hologram",

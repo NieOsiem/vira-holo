@@ -25,13 +25,22 @@ const SLIDERS = {
   ]
 };
 
+/** The settings window's tabs, in order. */
+const TABS = [
+  {id: "content", icon: "fa-solid fa-cube"},
+  {id: "look", icon: "fa-solid fa-palette"},
+  {id: "annotations", icon: "fa-solid fa-location-dot"},
+  {id: "link", icon: "fa-solid fa-link"},
+  {id: "view", icon: "fa-solid fa-sliders"}
+];
+
 /**
  * Hologram settings for one Tile. Every change is saved immediately so the hologram updates while you tune it.
  */
 export default class HoloConfig extends HandlebarsApplicationMixin(DocumentSheetV2) {
   static DEFAULT_OPTIONS = {
     classes: ["vira-holo-config"],
-    position: {width: 480, height: "auto"},
+    position: {width: 520, height: "auto"},
     window: {icon: "fa-solid fa-cube", contentClasses: ["standard-form"]},
     form: {submitOnChange: true, closeOnSubmit: false},
     actions: {
@@ -46,8 +55,16 @@ export default class HoloConfig extends HandlebarsApplicationMixin(DocumentSheet
   };
 
   static PARTS = {
-    form: {template: `modules/${MODULE_ID}/templates/holo-config.hbs`, scrollable: [""]}
+    tabs: {template: "templates/generic/tab-navigation.hbs"},
+    content: {template: `modules/${MODULE_ID}/templates/holo-config-content.hbs`, scrollable: [""]},
+    look: {template: `modules/${MODULE_ID}/templates/holo-config-look.hbs`, scrollable: [""]},
+    annotations: {template: `modules/${MODULE_ID}/templates/holo-config-annotations.hbs`, scrollable: [""]},
+    link: {template: `modules/${MODULE_ID}/templates/holo-config-link.hbs`, scrollable: [""]},
+    view: {template: `modules/${MODULE_ID}/templates/holo-config-view.hbs`, scrollable: [""]}
   };
+
+  /** @override */
+  tabGroups = {sheet: "content"};
 
   /**
    * Open the settings for a tile, or bring them to the front if already open.
@@ -88,6 +105,15 @@ export default class HoloConfig extends HandlebarsApplicationMixin(DocumentSheet
     return Object.assign(context, {
       holo,
       flags: `flags.${MODULE_ID}`,
+      tabClasses: "top-tabs",
+      tabs: Object.fromEntries(TABS.map(({id, icon}) => {
+        const active = this.tabGroups.sheet === id;
+        return [id, {
+          id, icon, group: "sheet", active,
+          cssClass: active ? "active" : "",
+          label: `VIRAHOLO.Config.Tabs.${id}`
+        }];
+      })),
       linkChoices: choices,
       hasLinks: !foundry.utils.isEmpty(choices),
       shareOptions: Object.keys(LINK_SECTIONS).map(section => ({
@@ -106,6 +132,14 @@ export default class HoloConfig extends HandlebarsApplicationMixin(DocumentSheet
       strokeCount: holo.annotations.strokes.length,
       players: game.users.filter(u => !u.isGM).map(u => ({id: u.id, name: u.name, owner: holo.owners.includes(u.id)}))
     });
+  }
+
+  /** @override */
+  async _preparePartContext(partId, context, options) {
+    context = await super._preparePartContext(partId, context, options);
+    const tab = context.tabs[partId];
+    if ( tab ) context.tab = tab;
+    return context;
   }
 
   /**

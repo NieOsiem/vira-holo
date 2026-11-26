@@ -1,0 +1,24 @@
+<section class="tab scrollable{{#if tab.active}} active{{/if}}" data-group="{{tab.group}}" data-tab="{{tab.id}}">
+  <fieldset>
+    <div class="form-group">
+      <label>{{localize "VIRAHOLO.Config.look.color"}}</label>
+      <div class="form-fields">
+        <color-picker name="{{flags}}.look.color" value="{{holo.look.color}}"></color-picker>
+      </div>
+    </div>
+    {{#each lookSliders}}
+    <div class="form-group">
+      <label>{{label}}</label>
+      <div class="form-fields">
+        <range-picker name="{{name}}" value="{{value}}" min="{{min}}" max="{{max}}" step="{{step}}"></range-picker>
+      </div>
+    </div>
+    {{/each}}
+    <div class="form-group">
+      <label for="{{partId}}-projector">{{localize "VIRAHOLO.Config.look.projector"}}</label>
+      <div class="form-fields">
+        <input type="checkbox" id="{{partId}}-projector" name="{{flags}}.look.projector" {{checked holo.look.projector}}>
+      </div>
+    </div>
+  </fieldset>
+</section>

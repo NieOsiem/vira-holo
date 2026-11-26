@@ -1,0 +1,75 @@
+<section class="tab scrollable{{#if tab.active}} active{{/if}}" data-group="{{tab.group}}" data-tab="{{tab.id}}">
+  <fieldset>
+    <legend>{{localize "VIRAHOLO.Config.General"}}</legend>
+    <div class="form-group">
+      <label for="{{partId}}-enabled">{{localize "VIRAHOLO.Config.enabled"}}</label>
+      <div class="form-fields">
+        <input type="checkbox" id="{{partId}}-enabled" name="{{flags}}.enabled" {{checked holo.enabled}}>
+      </div>
+    </div>
+    <div class="form-group">
+      <label for="{{partId}}-mode">{{localize "VIRAHOLO.Config.mode"}}</label>
+      <div class="form-fields">
+        <select id="{{partId}}-mode" name="{{flags}}.mode">{{selectOptions modes selected=holo.mode}}</select>
+      </div>
+    </div>
+    {{#unless isText}}
+    <div class="form-group">
+      <label>{{localize "VIRAHOLO.Config.image"}}</label>
+      <div class="form-fields">
+        <file-picker name="{{flags}}.image" type="imagevideo" value="{{holo.image}}"></file-picker>
+      </div>
+    </div>
+    {{/unless}}
+  </fieldset>
+
+  {{#if isTerrain}}
+  <fieldset>
+    <legend>{{localize "VIRAHOLO.Mode.terrain"}}</legend>
+    <div class="form-group">
+      <label>{{localize "VIRAHOLO.Config.terrain.heightmap"}}</label>
+      <div class="form-fields">
+        <file-picker name="{{flags}}.terrain.heightmap" type="image" value="{{holo.terrain.heightmap}}"></file-picker>
+      </div>
+      <p class="hint">{{localize "VIRAHOLO.Config.terrain.heightmapHint"}}</p>
+    </div>
+    {{#each terrainSliders}}
+    <div class="form-group">
+      <label>{{label}}</label>
+      <div class="form-fields">
+        <range-picker name="{{name}}" value="{{value}}" min="{{min}}" max="{{max}}" step="{{step}}"></range-picker>
+      </div>
+    </div>
+    {{/each}}
+  </fieldset>
+  {{/if}}
+
+  {{#if isText}}
+  <fieldset>
+    <legend>{{localize "VIRAHOLO.Mode.text"}}</legend>
+    <div class="form-group stacked">
+      <label for="{{partId}}-content">{{localize "VIRAHOLO.Config.text.content"}}</label>
+      <textarea id="{{partId}}-content" name="{{flags}}.text.content" rows="6">{{holo.text.content}}</textarea>
+    </div>
+    <div class="form-group">
+      <label for="{{partId}}-font">{{localize "VIRAHOLO.Config.text.font"}}</label>
+      <div class="form-fields">
+        <select id="{{partId}}-font" name="{{flags}}.text.font">{{selectOptions fonts selected=holo.text.font}}</select>
+      </div>
+    </div>
+    <div class="form-group">
+      <label for="{{partId}}-size">{{localize "VIRAHOLO.Config.text.size"}}</label>
+      <div class="form-fields">
+        <input type="number" id="{{partId}}-size" name="{{flags}}.text.size" value="{{holo.text.size}}" min="6" step="1">
+      </div>
+      <p class="hint">{{localize "VIRAHOLO.Config.text.sizeHint"}}</p>
+    </div>
+    <div class="form-group">
+      <label for="{{partId}}-align">{{localize "VIRAHOLO.Config.text.align"}}</label>
+      <div class="form-fields">
+        <select id="{{partId}}-align" name="{{flags}}.text.align">{{selectOptions aligns selected=holo.text.align}}</select>
+      </div>
+    </div>
+  </fieldset>
+  {{/if}}
+</section>
