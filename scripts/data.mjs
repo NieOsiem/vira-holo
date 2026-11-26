@@ -17,6 +17,10 @@ export const DEFAULTS = Object.freeze({
   interactive: true,
   /** Going up to a parent map arrives centred and eases there from the spot the old map was at, instead of ending on it. */
   recenterUp: true,
+  /** Whether the hologram is switched on; off, the tile shows only its `offStyle` and a way to turn it on. */
+  powered: true,
+  /** What an unpowered hologram looks like (OFF_STYLES). */
+  offStyle: "square",
   /** IDs of non-GM users who may drive the hologram. */
   owners: [],
   /**
@@ -53,7 +57,11 @@ export const DEFAULTS = Object.freeze({
     wire: 0.6,
     contours: 0.5,
     /** Display style (DISPLAY_MODES): see-through or opaque, wireframe or terrain. */
-    display: "xray"
+    display: "xray",
+    /** Display styles this map doesn't offer, as {style: true}. */
+    disabled: {},
+    /** Wireframe square size in the map's scale unit (0, or no scale: automatic). */
+    grid: 0
   },
   annotations: {
     /**
@@ -91,7 +99,7 @@ const MODE_DEFAULTS = Object.freeze({
 
 /**
  * What a link can share, by section, and the top-level keys of the hologram data each section covers.
- * Never shared: enabled, interactive, owners and the tile's placement.
+ * Never shared: enabled, powered, offStyle, interactive, owners and the tile's placement.
  */
 export const LINK_SECTIONS = Object.freeze({
   content: ["mode", "image", "terrain", "text", "scale"],
@@ -276,8 +284,23 @@ export const MAX_STROKE_POINTS = 400;
 /** Stroke width tiers: tier → line width relative to a medium stroke. */
 export const STROKE_WIDTHS = Object.freeze({1: 0.5, 2: 1, 3: 1.8});
 export const MAX_MEASURES = 50;
+/** Looks of a switched-off hologram: a small glowing square, or a round table (with a hole if the tile is big enough). */
+export const OFF_STYLES = Object.freeze(["square", "table"]);
+
 /** Terrain display styles, in the order the ring cycles through them. */
 export const DISPLAY_MODES = Object.freeze(["wireXray", "wire", "xray", "solid"]);
+
+/** The display styles a map offers (never none: if all are disabled, all are offered). */
+export function allowedDisplays(terrain) {
+  const allowed = DISPLAY_MODES.filter(m => !terrain?.disabled?.[m]);
+  return allowed.length ? allowed : [...DISPLAY_MODES];
+}
+
+/** The display style in effect: the chosen one, or the first allowed if the map doesn't offer it. */
+export function effectiveDisplay(terrain) {
+  const allowed = allowedDisplays(terrain);
+  return allowed.includes(terrain?.display) ? terrain.display : allowed[0];
+}
 /** Ink of measurements, as in the mockup. */
 export const MEASURE_INK = "#ffe066";
 

@@ -26,6 +26,7 @@
       "undo": "Undo your last change to pins, drawings or measurements",
       "redo": "Redo",
       "display": "Terrain display",
+      "power": "Switch the hologram off",
       "up": "Up a level: show the map this one is on"
     },
     "Config": {
@@ -47,6 +48,9 @@
       "image": "Image",
       "view": "View",
       "resetView": "Reset view",
+      "power": "Powered on",
+      "powerHint": "A switched-off hologram shows only its off style and a spot to click (GM and owners) to turn it back on.",
+      "offStyle": "Off style",
       "interactive": "Grab on canvas",
       "interactiveHint": "Lets the GM and owners orbit (drag), pan (Shift+drag) and zoom (click, then scroll) the hologram on the canvas.",
       "owners": "Owners",
@@ -59,7 +63,11 @@
         "resolution": "Mesh detail",
         "wire": "Wireframe",
         "contours": "Contour lines",
-        "display": "Display"
+        "display": "Display",
+        "grid": "Grid square size",
+        "gridHint": "Length of one wireframe square in the map's scale unit (set the scale above); 0 or no scale gives the automatic grid.",
+        "disabled": "Disable styles",
+        "disabledHint": "Ticked display styles are not offered on this map (the ring skips them)."
       },
       "text": {
         "content": "Text",
@@ -191,6 +199,10 @@
       "Circular": "A map can't be placed on itself or on a map inside it."
     },
     "StrokeLimit": "This hologram already has {max} drawings; clear some first.",
+    "OffStyle": {
+      "square": "Small glowing square",
+      "table": "Round table"
+    },
     "Units": {
       "m": "m",
       "km": "km",

@@ -1,4 +1,4 @@
-import {DISPLAY_MODES, INKS, MAX_STROKE_POINTS, MODULE_ID, STROKE_WIDTHS, canDrive, sanitizeMeasure,
+import {allowedDisplays, getHoloData, INKS, MAX_STROKE_POINTS, MODULE_ID, STROKE_WIDTHS, canDrive, sanitizeMeasure,
   sanitizeStroke} from "./data.mjs";
 import {applyAnnotationEdit} from "./annotations.mjs";
 import {writeHolo} from "./links.mjs";
@@ -64,7 +64,7 @@ export function broadcastPreview(doc, preview) {
  * Save what a driver changed (the camera, including auto-spin, the terrain's display style, and the map travelled
  * to: a map UUID, or null for home). GMs write directly; owners ask the active GM.
  * @param {TileDocument} doc
- * @param {{camera?: object, terrain?: {display: string}, map?: string|null}} changes
+ * @param {{camera?: object, terrain?: {display: string}, map?: string|null, powered?: boolean}} changes
  */
 export function saveDriverChanges(doc, changes) {
   if ( game.user.isGM ) return writeHolo(doc, sanitize(doc, changes));
@@ -152,10 +152,11 @@ function onAnnotations({uuid, list, edit}, sender) {
  * Only the fields a driver may change: camera numbers, a known display style, and travel to a neighbouring map
  * (the parent, a map placed on this one, or home).
  */
-function sanitize(doc, {camera, terrain, map}={}) {
+function sanitize(doc, {camera, terrain, map, powered}={}) {
   const changes = {};
+  if ( typeof powered === "boolean" ) changes.powered = powered;
   if ( camera ) changes.camera = pickCamera(camera);
-  if ( DISPLAY_MODES.includes(terrain?.display) ) changes.terrain = {display: terrain.display};
+  if ( allowedDisplays(getHoloData(doc).terrain).includes(terrain?.display) ) changes.terrain = {display: terrain.display};
   const target = (map === undefined) ? undefined : travelTarget(doc, map);
   if ( target !== undefined ) changes.camera = {...changes.camera, map: target};
   return changes;

@@ -1,6 +1,19 @@
 <section class="tab scrollable{{#if tab.active}} active{{/if}}" data-group="{{tab.group}}" data-tab="{{tab.id}}">
   <fieldset>
     <div class="form-group">
+      <label for="{{partId}}-powered">{{localize "VIRAHOLO.Config.power"}}</label>
+      <div class="form-fields">
+        <input type="checkbox" id="{{partId}}-powered" name="{{flags}}.powered" {{checked holo.powered}}>
+      </div>
+      <p class="hint">{{localize "VIRAHOLO.Config.powerHint"}}</p>
+    </div>
+    <div class="form-group">
+      <label for="{{partId}}-off-style">{{localize "VIRAHOLO.Config.offStyle"}}</label>
+      <div class="form-fields">
+        <select id="{{partId}}-off-style" name="{{flags}}.offStyle">{{selectOptions offStyles selected=holo.offStyle}}</select>
+      </div>
+    </div>
+    <div class="form-group">
       <label for="{{partId}}-interactive">{{localize "VIRAHOLO.Config.interactive"}}</label>
       <div class="form-fields">
         <input type="checkbox" id="{{partId}}-interactive" name="{{flags}}.interactive" {{checked holo.interactive}}>

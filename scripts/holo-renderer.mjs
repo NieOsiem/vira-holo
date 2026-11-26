@@ -1,4 +1,4 @@
-import {MEASURE_INK, UNITS, formatDistance, getHoloData} from "./data.mjs";
+import {MEASURE_INK, effectiveDisplay, UNITS, formatDistance, getHoloData} from "./data.mjs";
 import MarkerLayer from "./marker-layer.mjs";
 import MeasureLayer from "./measure-layer.mjs";
 import StrokeLayer from "./stroke-layer.mjs";
@@ -43,6 +43,17 @@ const REMOTE_PREVIEW_MS = 3000;
 const MEASURE_DASHES = 14;
 /** Approximate number of wireframe lines across the terrain in each direction. */
 const WIRE_LINES = 40;
+/** Switching on or off takes this long. */
+const POWER_MS = 900;
+/** A tile needs at least this many grid squares across for the table's hole. */
+const TABLE_HOLE_SQUARES = 3;
+/** The off table's radius (object units), its hole and its switch-on pad as fractions of it, and its texture size. */
+const TABLE_RADIUS = DISC_RADIUS * 0.97;
+const TABLE_HOLE = 0.3;
+const TABLE_PAD = 0.14;
+const TABLE_TEXTURE_SIZE = 1024;
+/** Most grid squares along either side, so a tiny square size can't build millions of lines. */
+const MAX_GRID_SQUARES = 200;
 const CONTOUR_LEVELS = 12;
 /** Height (0-1) at which the heightmap counts as land: the coastline of an island, drawn in the wireframe styles. */
 const COAST_HEIGHT = 0.012;  // ~3/255: heights are read back as 8-bit
@@ -480,7 +491,7 @@ function setQuad(geometry, hx, y, hz, uvs) {
  * An n×n vertex grid spanning [-hx, hx] × [-hz, hz] at height y, as a triangle geometry and a wireframe
  * geometry sharing the same vertex buffers. UV (0, 0) is the far-left corner.
  */
-function createGrid(n, hx, y, hz) {
+function createGrid(n, hx, y, hz, squares=null) {
   const positions = new Float32Array(n * n * 3);
   const uvs = new Float32Array(n * n * 2);
   for ( let j = 0; j < n; j++ ) {
@@ -502,6 +513,13 @@ function createGrid(n, hx, y, hz) {
       t += 6;
     }
   }
+  const positionBuffer = new PIXI.Buffer(positions, true);
+  const uvBuffer = new PIXI.Buffer(uvs, true);
+  const build = (index, position=positionBuffer, uv=uvBuffer) => new PIXI.Geometry()
+    .addAttribute("aVertexPosition", position, 3)
+    .addAttribute("aTextureCoord", uv, 2)
+    .addIndex(index);
+  if ( squares ) return {surface: build(triangles), wire: squaresWire(n, hx, y, hz, squares)};
   const step = Math.max(1, Math.round((n - 1) / WIRE_LINES));
   const lines = [];
   for ( let j = 0; j < n; j += step ) {
@@ -510,13 +528,41 @@ function createGrid(n, hx, y, hz) {
   for ( let i = 0; i < n; i += step ) {
     for ( let j = 0; j < n - 1; j++ ) lines.push((j * n) + i, ((j + 1) * n) + i);
   }
-  const positionBuffer = new PIXI.Buffer(positions, true);
-  const uvBuffer = new PIXI.Buffer(uvs, true);
-  const build = index => new PIXI.Geometry()
-    .addAttribute("aVertexPosition", positionBuffer, 3)
-    .addAttribute("aTextureCoord", uvBuffer, 2)
-    .addIndex(index);
   return {surface: build(triangles), wire: build(new IndexArray(lines))};
+}
+
+/**
+ * Wireframe lines at the edges of squares of a set size (not tied to the surface's vertices): `across` squares
+ * along the image's width and `down` along its height, each line sampled `n` times so it follows the relief.
+ */
+function squaresWire(n, hx, y, hz, {across, down}) {
+  const us = Array.from({length: Math.floor(across) + 1}, (_, k) => k / across);
+  const vs = Array.from({length: Math.floor(down) + 1}, (_, k) => k / down);
+  if ( us.at(-1) < 1 ) us.push(1);
+  if ( vs.at(-1) < 1 ) vs.push(1);
+  const count = (us.length + vs.length) * n;
+  const positions = new Float32Array(count * 3);
+  const uvs = new Float32Array(count * 2);
+  const index = new Uint32Array((us.length + vs.length) * (n - 1) * 2);
+  let k = 0;
+  let t = 0;
+  const addLine = point => {
+    for ( let s = 0; s < n; s++, k++ ) {
+      const [u, v] = point(s / (n - 1));
+      positions.set([((u * 2) - 1) * hx, y, (1 - (v * 2)) * hz], k * 3);
+      uvs.set([u, v], k * 2);
+      if ( s < n - 1 ) {
+        index.set([k, k + 1], t);
+        t += 2;
+      }
+    }
+  };
+  for ( const u of us ) addLine(s => [u, s]);
+  for ( const v of vs ) addLine(s => [s, v]);
+  return new PIXI.Geometry()
+    .addAttribute("aVertexPosition", new PIXI.Buffer(positions, true), 3)
+    .addAttribute("aTextureCoord", new PIXI.Buffer(uvs, true), 2)
+    .addIndex(index);
 }
 
 /** Mirrors the shaders' depthFade: farther points dim a little. */
@@ -640,6 +686,15 @@ export default class HoloRenderer {
     this.panelGeometry = createQuad();
     this.panelShader = new PIXI.Shader(panel, this.#lookUniforms({uPanelShape: new Float32Array([1, 1])}));
     this.panelMesh = new PIXI.Mesh(this.panelGeometry, this.panelShader, this.state);
+    // The off table is the panel's hologram look on a fixed top-down camera, with a drawn texture as its image.
+    this.offCameraUniform = new Float32Array([0, Math.PI / 2, BASE_DIST, 1]);
+    this.tableGeometry = createQuad();
+    setQuad(this.tableGeometry, TABLE_RADIUS / 0.97, 0, TABLE_RADIUS / 0.97, [0, 0, 1, 0, 1, 1, 0, 1]);
+    this.tableShader = new PIXI.Shader(panel, this.#lookUniforms({
+      uPanelShape: new Float32Array([1000, 1000]), uCamera: this.offCameraUniform, uTarget: new Float32Array(2), uTint: 1
+    }));
+    this.tableMesh = new PIXI.Mesh(this.tableGeometry, this.tableShader, this.state);
+    this.tableMesh.visible = false;
     this.discMesh = new PIXI.Mesh(this.discGeometry, this.discShader, this.state);
     this.moteGeometry = createMotes(tile.document.id);
     this.moteShader = new PIXI.Shader(mote, {
@@ -651,6 +706,7 @@ export default class HoloRenderer {
     this.stage = new PIXI.Container();
     this.markerLayer = new MarkerLayer();
     this.pingGraphics = new PIXI.Graphics();
+    this.offGraphics = new PIXI.Graphics();
     const strokeUniforms = {uCamera: this.cameraUniform, uTarget: this.targetUniform, uCenter: this.centerUniform,
       uVolume: this.volumeUniform, uFrag: this.fragUniform};
     this.strokeLayer = new StrokeLayer(stroke, strokeUniforms, this.state);
@@ -720,11 +776,20 @@ export default class HoloRenderer {
   #pings = [];
   /** Content opacity factor during a travel transition. */
   #fade = 1;
+  /** 0 (off) to 1 (on), moving towards `data.powered`; null before the first configure. */
+  #power = null;
+  /** The eased #power: scales and fades the content. */
+  #powerEase = 1;
+  /** Where the switch-on spot is in render-texture pixels while off: {x, y, rx, ry}. */
+  #powerSpot = null;
+  /** The table texture and whether it was drawn with a hole; built when first needed. */
+  #tableTexture = null;
+  #tableHoleDrawn = null;
 
   /** Strokes, measurements and waypoints go on top of the content, waypoints last. */
   #addOverlays() {
     this.stage.addChild(this.moteMesh, this.strokeLayer.container, this.liveStrokeLayer.container, this.measureLines.container,
-      this.liveMeasureLines.container, this.measureLabels.container, this.markerLayer.container, this.pingGraphics);
+      this.liveMeasureLines.container, this.measureLabels.container, this.markerLayer.container, this.tableMesh, this.pingGraphics, this.offGraphics);
   }
 
   #lookUniforms(extra={}) {
@@ -758,6 +823,7 @@ export default class HoloRenderer {
       this.#recenter = left ? {start: performance.now(), u: left.u, v: left.v} : null;
     }
     this.#mapKey = mapKey;
+    this.#power ??= data.powered ? 1 : 0;
     this.color.set(new PIXI.Color(data.look.color).toRgbArray());
     this.resize();
     const src = (data.mode === "terrain") ? data.terrain.heightmap : null;
@@ -876,8 +942,9 @@ export default class HoloRenderer {
     const radiusPixels = (fitRect ? Math.max(this.width, this.height) : Math.min(this.width, this.height)) / 2;
     this.pixelsPerUnit = radiusPixels * FILL / (FOCAL / BASE_DIST);
 
-    const resolution = Math.clamp(Math.round(this.data.terrain.resolution), 16, 256);
-    const key = [hx, hz, lift, mode === "terrain" ? resolution : 0].join();
+    const resolution = Math.clamp(Math.round(this.data.terrain.resolution), 16, 1024);
+    const squares = mode === "terrain" ? this.#gridSquares(hx, hz) : null;
+    const key = [hx, hz, lift, mode === "terrain" ? resolution : 0, squares?.across, squares?.down].join();
     if ( key === this.#footprint ) return;
     this.#footprint = key;
     setQuad(this.panelGeometry, hx, lift, hz, [0, 0, 1, 0, 1, 1, 0, 1]);
@@ -888,7 +955,7 @@ export default class HoloRenderer {
 
     this.#destroyTerrain();
     if ( this.data.mode !== "terrain" ) return;
-    const {surface, wire} = createGrid(resolution, hx, lift, hz);
+    const {surface, wire} = createGrid(resolution, hx, lift, hz, squares);
     const {terrain, wire: wireProgram} = getPrograms();
     const shape = {
       uHeight: PIXI.Texture.EMPTY, uRelief: 0,
@@ -915,6 +982,18 @@ export default class HoloRenderer {
     this.#addOverlays();
   }
 
+  /**
+   * How many wireframe squares fit across and down the image when the grid is set to a size in the map's scale
+   * (e.g. 1 square = 20 miles); null for the automatic grid (also without a scale).
+   */
+  #gridSquares(hx, hz) {
+    const {terrain: {grid}, scale: {distance, axis}} = this.data;
+    if ( !(grid > 0) || !(distance > 0) ) return null;
+    const perUnit = distance / ((axis === "height") ? 2 * hz : 2 * hx);
+    const count = length => Math.clamp((length * perUnit) / grid, 1, MAX_GRID_SQUARES);
+    return {across: Math.round(count(2 * hx) * 1000) / 1000, down: Math.round(count(2 * hz) * 1000) / 1000};
+  }
+
   #destroyTerrain() {
     if ( !this.#terrain ) return;
     for ( const mesh of this.#terrain.meshes ) mesh.destroy();
@@ -939,7 +1018,10 @@ export default class HoloRenderer {
     this.displayYaw = (camera.yaw + this.spinPhase(camera.spin)) % TAU;
     const pitch = Math.clamp(camera.pitch, MIN_PITCH, MAX_PITCH);
     const dist = Math.clamp(camera.dist, MIN_DIST, MAX_DIST);
-    const scale = this.#updateTravel();
+    const target = this.data.powered ? 1 : 0;
+    this.#power += Math.clamp(target - this.#power, -deltaMS / POWER_MS, deltaMS / POWER_MS);
+    this.#powerEase = this.#power * this.#power * (3 - (2 * this.#power));
+    const scale = this.#updateTravel() * (0.04 + (0.96 * this.#powerEase));
     this.cameraUniform.set([this.displayYaw, pitch, dist, this.pixelsPerUnit * scale]);
     this.discCameraUniform.set([this.displayYaw, pitch, BASE_DIST, this.pixelsPerUnit]);
     this.targetUniform.set(this.#recenteredTarget(camera));
@@ -958,7 +1040,7 @@ export default class HoloRenderer {
     const showTerrain = !!(this.#terrain && this.#heightmap);
     this.panelMesh.visible = !showTerrain;
     if ( this.#terrain ) for ( const mesh of this.#terrain.meshes ) mesh.visible = showTerrain;
-    const display = showTerrain ? terrain.display : "xray";
+    const display = showTerrain ? effectiveDisplay(terrain) : "xray";
     this.#applyDisplay(display);
 
     const parts = [look.ring, look.dashes, look.glow, look.north];
@@ -987,13 +1069,15 @@ export default class HoloRenderer {
       wireShader.uniforms.uWire = display.startsWith("wire") ? Math.max(terrain.wire, 0.6) : terrain.wire;
     }
     const disc = this.discShader.uniforms;
-    disc.uOpacity = look.opacity;
+    disc.uOpacity = look.opacity * this.#powerEase;
     disc.uFlicker = this.#flicker;
     disc.uDashPhase = (seconds * 0.5) % 1;
     this.#updateMotes(showTerrain, seconds);
     this.#layoutLines(showTerrain);
     this.#layoutMarkers(pitch);
     this.#drawPings();
+    this.#updateTable(seconds);
+    this.#drawOff(seconds);
   }
 
   #updateMotes(showTerrain, seconds) {
@@ -1034,14 +1118,14 @@ export default class HoloRenderer {
     }
     const tested = depth ? this.depthReadState : this.state;
     this.moteMesh.state = tested;
-    for ( const layer of [this.strokeLayer, this.liveStrokeLayer, this.measureLines, this.liveMeasureLines] ) {
-      layer.setState(tested);
-    }
+    for ( const layer of [this.strokeLayer, this.liveStrokeLayer] ) layer.setState(tested);
+    // Measurements stay readable on top of the relief
+    for ( const layer of [this.measureLines, this.liveMeasureLines] ) layer.setState(this.state);
   }
 
   /** Content opacity: the look's, faded in after travelling to another map. The projector disc doesn't fade. */
   get #opacity() {
-    return this.data.look.opacity * this.#fade;
+    return this.data.look.opacity * this.#fade * this.#powerEase;
   }
 
   /**
@@ -1235,8 +1319,13 @@ export default class HoloRenderer {
     const r = this.resolution;
     const transform = new PIXI.Matrix(r, 0, 0, r, -x * r, -y * r);
     // The clear only resets depth while depth writes are on, which the last mesh drawn may have turned off.
+    if ( this.tableMesh.visible && (this.#tableHoleDrawn !== this.#tableHole()) ) this.#drawTableTexture(renderer, this.#tableHole());
     renderer.state.set(this.state);
+    // Fully off, only the off state is drawn.
+    const hidden = (this.#power > 0) ? [] : this.stage.children.filter(c => (c !== this.offGraphics) && (c !== this.tableMesh) && c.visible);
+    for ( const child of hidden ) child.visible = false;
     renderer.render(this.stage, {renderTexture: this.renderTexture, clear: true, transform});
+    for ( const child of hidden ) child.visible = true;
   }
 
   /* -------------------------------------------- */
@@ -1569,9 +1658,9 @@ export default class HoloRenderer {
   }
 
   /** #project with the camera's trigonometry worked out once, for projecting many points. */
-  #projector() {
-    const [yaw, pitch, dist, ppu] = this.cameraUniform;
-    const [tx, tz] = this.targetUniform;
+  #projector(camera=this.cameraUniform, target=this.targetUniform) {
+    const [yaw, pitch, dist, ppu] = camera;
+    const [tx, tz] = target;
     const [cx, cy] = this.centerUniform;
     const cosY = Math.cos(yaw);
     const sinY = Math.sin(yaw);
@@ -1656,6 +1745,133 @@ export default class HoloRenderer {
       g.drawCircle(tip.x, tip.y, width * 1.6);
       g.endFill();
     }
+  }
+
+  /** Does the off table have a hole (the tile spans enough grid squares)? */
+  #tableHole() {
+    const {width, height} = this.tile.document;
+    return Math.min(width, height) / canvas.grid.size >= TABLE_HOLE_SQUARES;
+  }
+
+  /** Show the off table (when that's the off style and not fully on) with the content's hologram look. */
+  #updateTable(seconds) {
+    const {look, offStyle} = this.data;
+    const shown = (offStyle === "table") && (this.#power < 1);
+    this.tableMesh.visible = shown;
+    if ( !shown ) return;
+    this.offCameraUniform[3] = this.pixelsPerUnit;
+    const {uniforms} = this.tableShader;
+    uniforms.uImage = this.#tableTexture ?? PIXI.Texture.EMPTY;
+    uniforms.uOpacity = look.opacity * (1 - this.#power);
+    uniforms.uSolidity = look.solidity;
+    uniforms.uScan = look.scanlines;
+    uniforms.uScanDensity = this.scanDensity;
+    uniforms.uScanPhase = (seconds * 0.8) % 1;
+    uniforms.uFlicker = this.#flicker;
+  }
+
+  /**
+   * Draw the table top, top-down, in white on transparent (the shader tints it): a translucent top, a bright rim,
+   * inlaid rings and ticks, and the emitter, in a hole or as a pad.
+   */
+  #drawTableTexture(renderer, hole) {
+    const size = TABLE_TEXTURE_SIZE;
+    const c = size / 2;
+    const r = c * 0.97;
+    const g = new PIXI.Graphics();
+    const polar = (radius, angle) => [c + (Math.cos(angle) * radius), c + (Math.sin(angle) * radius)];
+    g.beginFill(0xffffff, 0.2).drawCircle(c, c, r);
+    if ( hole ) g.beginHole().drawCircle(c, c, r * TABLE_HOLE).endHole();
+    g.endFill();
+    g.lineStyle(7, 0xffffff, 1).drawCircle(c, c, r);
+    g.lineStyle(3, 0xffffff, 0.4).drawCircle(c, c, r * 0.975);
+    for ( const f of [0.84, 0.66] ) g.lineStyle(3, 0xffffff, 0.5).drawCircle(c, c, r * f);
+    g.lineStyle(2, 0xffffff, 0.25);
+    for ( let k = 0; k < 8; k++ ) {
+      const angle = (k / 8) * TAU;
+      g.moveTo(...polar(r * 0.66, angle)).lineTo(...polar(r * 0.84, angle));
+    }
+    g.lineStyle(4, 0xffffff, 0.85);
+    for ( let k = 0; k < 24; k++ ) {
+      const angle = (k / 24) * TAU;
+      g.moveTo(...polar(r * 0.9, angle)).lineTo(...polar(r * 0.95, angle));
+    }
+    const emitter = r * (hole ? TABLE_HOLE : TABLE_PAD);
+    g.lineStyle(0);
+    for ( const [scale, alpha] of [[1.5, 0.07], [1.25, 0.12]] ) g.beginFill(0xffffff, alpha).drawCircle(c, c, emitter * scale).endFill();
+    g.beginFill(0xffffff, hole ? 0.3 : 0.5).drawCircle(c, c, emitter).endFill();
+    g.lineStyle(8, 0xffffff, 1).drawCircle(c, c, emitter);
+    this.#tableTexture ??= PIXI.RenderTexture.create({width: size, height: size});
+    renderer.render(g, {renderTexture: this.#tableTexture, clear: true});
+    g.destroy();
+    this.#tableHoleDrawn = hole;
+  }
+
+  /**
+   * The switched-off look, fading with the power: a small glowing square, or a round table across the projection
+   * area (with a hole in the middle if the tile spans enough grid squares) whose centre glows. Clicking the glowing
+   * spot switches on (see powerSpotAt).
+   */
+  #drawOff(seconds) {
+    const g = this.offGraphics;
+    g.clear();
+    this.#powerSpot = null;
+    const alpha = 1 - this.#power;
+    if ( alpha <= 0.001 ) return;
+    const project = this.#projector(this.offCameraUniform, [0, 0]); // Always from straight above, north up
+    const color = new PIXI.Color(this.data.look.color).toNumber();
+    const pulse = 0.65 + (0.35 * Math.sin(seconds * 2.6));
+    const width = Math.max(1.5, Math.min(this.width, this.height) / 300);
+    const ring = (radius, y, steps=72, offset=0) => {
+      const points = [];
+      for ( let k = 0; k < steps; k++ ) {
+        const angle = offset + ((k / steps) * TAU);
+        const p = project({x: Math.cos(angle) * radius, y, z: Math.sin(angle) * radius});
+        if ( p ) points.push(p);
+      }
+      return points;
+    };
+    const flat = points => points.flatMap(p => [p.x, p.y]);
+    const spot = (points, y) => {
+      const centre = project({x: 0, y, z: 0});
+      if ( !centre ) return;
+      const rx = Math.max(...points.map(p => Math.abs(p.x - centre.x)));
+      const ry = Math.max(...points.map(p => Math.abs(p.y - centre.y)));
+      this.#powerSpot = {x: centre.x, y: centre.y, rx: Math.max(rx, 14), ry: Math.max(ry, 14)};
+    };
+
+    if ( this.data.offStyle === "table" ) {
+      // The table itself is a hologram (tableMesh); only its glowing switch-on spot pulses here.
+      const emitter = TABLE_RADIUS * (this.#tableHole() ? TABLE_HOLE : TABLE_PAD);
+      const edge = ring(emitter, 0);
+      g.lineStyle({width: width * 1.4, color, alpha: alpha * (0.3 + (0.5 * pulse))}).drawPolygon(flat(edge));
+      spot(edge, 0);
+      return;
+    }
+
+    // A small floating square: a frame, a turning inner square and a soft glow
+    const half = 0.12;
+    const square = (size, angle, y) => [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([sx, sz]) => {
+      const x = sx * size;
+      const z = sz * size;
+      return project({x: (x * Math.cos(angle)) - (z * Math.sin(angle)), y, z: (x * Math.sin(angle)) + (z * Math.cos(angle))});
+    }).filter(Boolean);
+    const frame = square(half, 0, 0.03);
+    g.lineStyle(0).beginFill(color, alpha * 0.1 * pulse).drawPolygon(flat(square(half * 1.7, 0, 0.03))).endFill();
+    g.beginFill(color, alpha * 0.16 * pulse).drawPolygon(flat(frame)).endFill();
+    g.lineStyle({width: width * 1.4, color, alpha: alpha * (0.55 + (0.4 * pulse))}).drawPolygon(flat(frame));
+    g.lineStyle({width, color, alpha: alpha * 0.8}).beginFill(color, alpha * 0.35).drawPolygon(flat(square(half * 0.5, seconds * 0.7, 0.03))).endFill();
+    spot(frame, 0.03);
+  }
+
+  /**
+   * Is a render-texture point on the glowing spot that switches the hologram on?
+   * @param {{x: number, y: number}} point
+   */
+  powerSpotAt({x, y}) {
+    const spot = this.#powerSpot;
+    if ( !spot || (this.#power > 0) ) return false;
+    return (((x - spot.x) / spot.rx) ** 2) + (((y - spot.y) / spot.ry) ** 2) <= 1;
   }
 
   #layoutMarkers(pitch) {
@@ -1795,7 +2011,8 @@ export default class HoloRenderer {
     this.measureLabels.destroy();
     this.moteMesh.destroy();
     this.stage.destroy({children: true});
-    destroyGeometries(this.discGeometry, this.panelGeometry, this.moteGeometry);
+    destroyGeometries(this.discGeometry, this.panelGeometry, this.moteGeometry, this.tableGeometry);
+    this.#tableTexture?.destroy(true);
     this.texture.destroy(false);
     this.renderTexture.destroy(true);
   }

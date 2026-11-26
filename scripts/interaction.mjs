@@ -1,4 +1,4 @@
-import {DEFAULTS, DISPLAY_MODES, INKS, MARKER_GLYPHS, MAX_MEASURES, MAX_STROKES, MAX_STROKE_POINTS, canDrive, contrastingInk,
+import {DEFAULTS, MODULE_ID, allowedDisplays, effectiveDisplay, INKS, MARKER_GLYPHS, MAX_MEASURES, MAX_STROKES, MAX_STROKE_POINTS, canDrive, contrastingInk,
   defaultCamera, sanitizeScale} from "./data.mjs";
 import * as history from "./history.mjs";
 import HoloConfig from "./holo-config.mjs";
@@ -82,7 +82,10 @@ export function registerInteraction() {
   window.addEventListener("wheel", onWheel, {capture: true, passive: false});
   window.addEventListener("keydown", onKeyDown, {capture: true});
   Hooks.on("refreshTile", tile => refreshRing(tile));
-  Hooks.on("updateTile", doc => refreshRing(doc.object));
+  Hooks.on("updateTile", doc => {
+    if ( (doc.object === engaged) && (doc.getFlag(MODULE_ID, "powered") === false) ) setEngaged(null);
+    refreshRing(doc.object);
+  });
   Hooks.on("updateJournalEntry", () => refreshRing());
   Hooks.on("destroyTile", tile => {
     if ( tile === engaged ) setEngaged(null);
@@ -116,6 +119,10 @@ function setEngaged(hit) {
     measure: () => setTool((tool === "measure") ? "adjust" : ((tool === "adjust") ? null : "measure"), holo),
     undo: () => history.undo(tile.document),
     redo: () => history.redo(tile.document),
+    power: () => {
+      setEngaged(null);
+      saveDriverChanges(tile.document, {powered: false});
+    },
     settings: () => HoloConfig.open(tile.document)
   });
   refreshHistoryGlyphs();
@@ -201,14 +208,15 @@ function swallow(event) {
  * layer (a token, a drawing, ...) is under the pointer: those keep their normal behaviour.
  * @param {PointerEvent|WheelEvent} event
  * @param {boolean} [anyUser=false]   Also holograms this user can't drive (for pings, which everyone may send)
+ * @param {boolean} [off=false]       Look for switched-off holograms instead (only their switch-on spot is live)
  * @returns {{tile: Tile, holo: HoloRenderer}|null}
  */
-function hologramAt(event, anyUser=false) {
+function hologramAt(event, anyUser=false, off=false) {
   if ( !canvas?.ready || (event.target !== canvas.app.view) || canvas.tiles.active ) return null;
   const point = canvasPoint(event);
   let found = null;
   for ( const [tile, holo] of getHolograms() ) {
-    if ( !holo.data.interactive || !tile.visible || !tile.mesh?.visible ) continue;
+    if ( !holo.data.interactive || !tile.visible || !tile.mesh?.visible || (holo.data.powered === off) ) continue;
     if ( (!anyUser && !canDrive(game.user, tile.document)) || !insideProjection(tile, point) ) continue;
     if ( !game.user.isGM && !canvas.visibility.testVisibility(tile.center, {object: tile}) ) continue;
     if ( !found || isAbove(tile, found.tile) ) found = {tile, holo};
@@ -254,6 +262,19 @@ function placeableAt(event) {
 function onPointerDown(event) {
   if ( (event.button !== 0) || isRingEvent(event) || isCardEvent(event) || isMeasureCardEvent(event) ) return;
   const hit = hologramAt(event);
+  const off = !hit && hologramAt(event, false, true);
+  if ( off && off.holo.powerSpotAt(off.holo.toTexturePoint(canvasPoint(event))) ) {
+    swallow(event);
+    setEngaged(null);
+    // Switching on takes a double click, so a stray click on the table does nothing.
+    const now = performance.now();
+    if ( (lastClick.tile !== off.tile) || (now - lastClick.time >= DOUBLE_CLICK_MS) ) {
+      lastClick = {tile: off.tile, time: now};
+      return;
+    }
+    lastClick = {tile: null, time: 0};
+    return saveDriverChanges(off.tile.document, {powered: true});
+  }
   // Everyone may ping (Ctrl+click), whether or not they can drive the hologram.
   const pinging = !hit && (event.ctrlKey || event.metaKey) && hologramAt(event, true);
   if ( pinging ) {
@@ -708,8 +729,10 @@ function recenter(tile, holo) {
 
 /** Switch the terrain to the next display style (see-through or opaque, wireframe or terrain). */
 function cycleDisplay(tile, holo) {
-  const current = DISPLAY_MODES.indexOf(holo.data.terrain.display);
-  saveDriverChanges(tile.document, {terrain: {display: DISPLAY_MODES[(current + 1) % DISPLAY_MODES.length]}});
+  const {terrain} = holo.data;
+  const allowed = allowedDisplays(terrain);
+  const current = allowed.indexOf(effectiveDisplay(terrain));
+  saveDriverChanges(tile.document, {terrain: {display: allowed[(current + 1) % allowed.length]}});
 }
 
 /** Stop or restart auto-spin, keeping the hologram where it currently is on screen. */

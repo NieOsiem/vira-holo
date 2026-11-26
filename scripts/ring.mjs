@@ -1,4 +1,4 @@
-import {DISPLAY_MODES, INKS, STROKE_WIDTHS, getHoloData} from "./data.mjs";
+import {INKS, effectiveDisplay, STROKE_WIDTHS, getHoloData} from "./data.mjs";
 
 /** Stroke glyphs in the style of the original mockup. */
 const GLYPHS = {
@@ -13,6 +13,7 @@ const GLYPHS = {
   measure: '<path d="M2 12h20M6 8v8M12 6v12M18 8v8"/>',
   undo: '<path d="M3 7v6h6"/><path d="M21 17a9 9 0 0 0-15-6.7L3 13"/>',
   redo: '<path d="M21 7v6h-6"/><path d="M3 17a9 9 0 0 1 15-6.7L21 13"/>',
+  power: '<path d="M12 3v8.5"/><path d="M7 6.2a8 8 0 1 0 10 0"/>',
   settings: '<path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/>'
     + '<circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/>'
 };
@@ -59,7 +60,7 @@ export function showRing(tile, actions) {
   const terrain = mode === "terrain";
   const up = !!map.parent;
   const names = [...(up ? ["up"] : []), "recenter", "spin", ...(terrain ? ["display"] : []), "waypoint", "ping", "draw", "erase", "measure", "undo",
-    "redo", ...(game.user.isGM ? ["settings"] : [])];
+    "redo", "power", ...(game.user.isGM ? ["settings"] : [])];
   const buttons = names.map((name, index) => {
     const button = document.createElement("button");
     button.type = "button";
@@ -175,7 +176,8 @@ export function refreshRing(tile) {
   if ( tile.destroyed || !tile.visible || !hud ) return hideRing();
   if ( !element.isConnected ) hud.append(element);
 
-  const {look, camera, mode, map, terrain: {display}} = getHoloData(tile.document);
+  const {look, camera, mode, map, terrain} = getHoloData(tile.document);
+  const display = effectiveDisplay(terrain);
   // The display glyph is only there for terrain, and "up" only below another map: rebuild the ring on a change.
   if ( ((mode === "terrain") !== ring.terrain) || (!!map.parent !== ring.up) ) {
     const {actions} = ring;

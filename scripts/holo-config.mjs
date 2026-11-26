@@ -1,4 +1,4 @@
-import {DISPLAY_MODES, LINK_SECTIONS, MODULE_ID, UNITS, defaultCamera, deletionUpdate, getHoloData,
+import {DISPLAY_MODES, OFF_STYLES, allowedDisplays, LINK_SECTIONS, MODULE_ID, UNITS, defaultCamera, deletionUpdate, getHoloData,
   getStateJournal} from "./data.mjs";
 import * as history from "./history.mjs";
 import {createLink, joinLink, leaveLink, linkChoices, writeHolo} from "./links.mjs";
@@ -23,7 +23,7 @@ const SLIDERS = {
   ],
   terrain: [
     ["relief", 0, 3, 0.05],
-    ["resolution", 32, 256, 16],
+    ["resolution", 32, 1024, 16],
     ["wire", 0, 1, 0.05],
     ["contours", 0, 1, 0.05]
   ]
@@ -142,7 +142,12 @@ export default class HoloConfig extends HandlebarsApplicationMixin(DocumentSheet
       aligns: Object.fromEntries(["left", "center", "right"].map(a => [a, localize(`VIRAHOLO.Config.text.${a}`)])),
       lookSliders: sliders("look"),
       terrainSliders: sliders("terrain"),
-      displayModes: Object.fromEntries(DISPLAY_MODES.map(m => [m, localize(`VIRAHOLO.Display.${m}`)])),
+      displayModes: Object.fromEntries(allowedDisplays(holo.terrain).map(m => [m, localize(`VIRAHOLO.Display.${m}`)])),
+      offStyles: Object.fromEntries(OFF_STYLES.map(s => [s, localize(`VIRAHOLO.OffStyle.${s}`)])),
+      gridUnit: localize(`VIRAHOLO.Units.${holo.scale.unit}`),
+      displayToggles: DISPLAY_MODES.map(m => ({
+        name: `flags.${MODULE_ID}.terrain.disabled.${m}`, label: localize(`VIRAHOLO.Display.${m}`), disabled: !!holo.terrain.disabled?.[m]
+      })),
       cameraSliders: sliders("camera"),
       markerCount: holo.annotations.markers.length,
       strokeCount: holo.annotations.strokes.length,
