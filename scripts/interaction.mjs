@@ -413,7 +413,7 @@ function extendStroke(event) {
  */
 function eraseAlong(tile, holo, from, to) {
   if ( tile.destroyed ) return;
-  const texelsPerPixel = (holo.renderTexture.width / tile.document.width) / canvas.stage.scale.x;
+  const texelsPerPixel = (holo.width / tile.document.width) / canvas.stage.scale.x;
   for ( const {list, id} of holo.annotationsAlong(from, to, ERASER_RADIUS * texelsPerPixel) ) {
     const before = holo.annotation(list, id);
     holo.hide(list, id);

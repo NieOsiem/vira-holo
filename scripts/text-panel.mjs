@@ -1,6 +1,6 @@
 const PADDING = 0.06;
-const MAX_SIZE = 2048;
-/** Texture pixels per scene pixel, a little above 1 so text stays crisp when zoomed in. */
+const MAX_SIZE = 4096;
+/** Fewest texture pixels per scene pixel, a little above 1 so text stays crisp at normal zoom. */
 const OVERSAMPLE = 1.25;
 const MIN_FONT_SIZE = 6;
 const LINE_HEIGHT = 1.2;
@@ -18,10 +18,11 @@ export default class TextPanel {
    * @param {{content: string, font: string, size: number, align: string}} text
    * @param {number} width    Panel width in scene pixels
    * @param {number} height   Panel height in scene pixels
+   * @param {number} [devicePixels=1]   Device pixels per scene pixel on screen, so zoomed-in text stays sharp
    */
-  async update(text, width, height) {
+  async update(text, width, height, devicePixels=1) {
     const font = text.font || CONFIG.defaultFontFamily || "Signika";
-    const scale = Math.min(OVERSAMPLE, MAX_SIZE / Math.max(width, height, 1));
+    const scale = Math.min(Math.max(OVERSAMPLE, devicePixels), MAX_SIZE / Math.max(width, height, 1));
     const w = Math.max(2, Math.round(width * scale));
     const h = Math.max(2, Math.round(height * scale));
     const key = JSON.stringify([text.content, font, text.size, text.align, w, h]);

@@ -42,8 +42,8 @@ export default class StrokeLayer {
       .addAttribute("aWidth", this.vertices, 1, false, FLOAT, bytes, 52)
       .addAttribute("aDistance", this.vertices, 1, false, FLOAT, bytes, 56)
       .addIndex(this.indices);
-    const pass = extra => new PIXI.Shader(program, {...uniforms, uOpacity: 1, uFlicker: 1, uWidth: 1, uDash: dash,
-      uDashPhase: 0, ...extra});
+    const pass = extra => new PIXI.Shader(program, {...uniforms, uOpacity: 1, uFlicker: 1, uWidth: 1, uPixel: 1,
+      uDash: dash, uDashPhase: 0, ...extra});
     this.shaders = [pass({uWidthScale: GLOW_SCALE, uAlpha: 0.4, uSoft: 1}), pass({uWidthScale: 1, uAlpha: 1, uSoft: 0})];
     this.container.addChild(...this.shaders.map(shader => new PIXI.Mesh(this.geometry, shader, state)));
     this.container.visible = false;
@@ -103,11 +103,12 @@ export default class StrokeLayer {
   }
 
   /**
-   * Per-frame look: opacity, flicker, the half width of a medium stroke in render-texture pixels and how far dashes
-   * have marched (0..1).
+   * Per-frame look: opacity, flicker, the half width of a medium stroke and one device pixel (both in layout pixels)
+   * and how far dashes have marched (0..1).
    */
-  update({opacity, flicker, width, dashPhase=0}) {
+  update({opacity, flicker, width, pixel=1, dashPhase=0}) {
     for ( const {uniforms} of this.shaders ) {
+      uniforms.uPixel = pixel;
       uniforms.uOpacity = opacity;
       uniforms.uFlicker = flicker;
       uniforms.uWidth = width;

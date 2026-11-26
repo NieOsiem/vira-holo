@@ -30,10 +30,11 @@ class MarkerSprite {
   }
 
   /** Redraw the parts that only change with the waypoint's settings or the hologram's size. */
-  draw(marker, size, showLabel, selected) {
-    const key = [marker.label, marker.glyph, marker.color, size, showLabel, selected].join("|");
+  draw(marker, size, showLabel, selected, resolution) {
+    const key = [marker.label, marker.glyph, marker.color, size, showLabel, selected, resolution].join("|");
     if ( key === this.key ) return;
     this.key = key;
+    this.text.resolution = resolution; // Text is a bitmap: render it at the hologram's resolution
     const color = new PIXI.Color(marker.color).toNumber();
     const radius = size * (selected ? 1.35 : 1);
 
@@ -109,9 +110,9 @@ export default class MarkerLayer {
   /**
    * Create, update and remove sprites to match the waypoints.
    * @param {object[]} markers
-   * @param {{size: number, labels: boolean, selected: string|null}} options
+   * @param {{size: number, labels: boolean, selected: string|null, resolution: number}} options
    */
-  sync(markers, {size, labels, selected}) {
+  sync(markers, {size, labels, selected, resolution=1}) {
     const ids = new Set(markers.map(m => m.id));
     for ( const [id, sprite] of this.#sprites ) {
       if ( ids.has(id) ) continue;
@@ -125,7 +126,7 @@ export default class MarkerLayer {
         this.#sprites.set(marker.id, sprite);
         this.container.addChild(sprite.container);
       }
-      sprite.draw(marker, size * (MARKER_SIZES[marker.size] ?? 1), labels, marker.id === selected);
+      sprite.draw(marker, size * (MARKER_SIZES[marker.size] ?? 1), labels, marker.id === selected, resolution);
     }
   }
 

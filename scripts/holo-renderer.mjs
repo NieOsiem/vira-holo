@@ -13,7 +13,19 @@ export const MIN_DIST = 2.2;
 export const MAX_DIST = 14;
 export const MIN_PITCH = 0.15;
 export const MAX_PITCH = Math.PI / 2;
-const MAX_RT_SIZE = 2048;
+/**
+ * Longest side of the hologram's layout space, in which it is laid out and picked ("texture pixels"): the tile's
+ * own size up to this. What is actually rendered is the part of it on screen, at the screen's pixel density.
+ */
+const MAX_LAYOUT_SIZE = 2048;
+/**
+ * Device pixels across the hologram's longer side that a small hologram is supersampled up to, by at most
+ * MAX_SUPERSAMPLE: bilinear sampling only averages 2×2 texels, so more would alias rather than smooth.
+ */
+const MIN_RENDER_PIXELS = 512;
+const MAX_SUPERSAMPLE = 2;
+/** Largest render texture side, whatever the GPU allows. */
+const MAX_RENDER_SIZE = 8192;
 const DISC_RADIUS = 1.08;
 /** One scanline per this many scene pixels of tile height. */
 const SCANLINE_SPACING = 6;
@@ -68,9 +80,14 @@ uniform vec2 uCenter;`;
 
 /** Fades content out towards the edge of the projection area, so panned or zoomed content never ends in a hard cut. */
 const VOLUME = `
-uniform vec3 uVolume; // render-texture width and height; z = 1 for a rectangular (sign) area, 0 for elliptical
+uniform vec3 uVolume; // layout width and height; z = 1 for a rectangular (sign) area, 0 for elliptical
+uniform vec4 uFrag;   // layout position of the render texture's corner, and layout pixels per device pixel
+// This fragment's position in layout pixels (only the on-screen part of the layout is rendered).
+vec2 holoPixel() {
+  return uFrag.xy + gl_FragCoord.xy * uFrag.zw;
+}
 float volumeFade() {
-  vec2 q = abs((gl_FragCoord.xy / uVolume.xy) * 2.0 - 1.0);
+  vec2 q = abs((holoPixel() / uVolume.xy) * 2.0 - 1.0);
   float d = uVolume.z > 0.5 ? max(q.x, q.y) : length(q);
   return 1.0 - smoothstep(0.88, 1.0, d);
 }`;
@@ -94,7 +111,7 @@ vec4 holoColor(vec4 tex, float shade) {
   vec3 color = mix(rgb, uColor * (0.1 + 1.4 * lum), uTint) * shade;
   // A hologram is emitted light: when tinted, dark parts of the image glow (and block) less.
   float emission = mix(1.0, 0.2 + 0.8 * lum, uTint);
-  float scan = 1.0 - uScan * 0.6 * (0.5 + 0.5 * sin((gl_FragCoord.y * uScanDensity + uScanPhase) * 6.2831853));
+  float scan = 1.0 - uScan * 0.6 * (0.5 + 0.5 * sin((holoPixel().y * uScanDensity + uScanPhase) * 6.2831853));
   float a = tex.a * emission * uOpacity * scan * uFlicker;
   return vec4(color * a, a);
 }
@@ -230,8 +247,9 @@ attribute vec3 aColor;
 attribute float aWidth;
 attribute float aDistance;
 ${CAMERA_UNIFORMS}
-uniform float uWidth; // half width in render-texture pixels of a medium stroke
+uniform float uWidth; // half width in layout pixels of a medium stroke
 uniform float uWidthScale;
+uniform float uPixel; // one device pixel, in layout pixels
 varying vec3 vColor;
 varying float vEdge;
 varying float vHalf;
@@ -254,7 +272,7 @@ void main() {
   t = length(t) > 1e-4 ? normalize(t) : d1;
   vec2 miter = vec2(-t.y, t.x);
   float halfWidth = aWidth * uWidth * uWidthScale;
-  float extent = halfWidth + 1.0; // one pixel more for antialiasing
+  float extent = halfWidth + uPixel; // one device pixel more for antialiasing
   float stretch = 1.0 / max(dot(miter, vec2(-d1.y, d1.x)), 0.5);
   vEdge = aSide * extent;
   vHalf = halfWidth;
@@ -274,6 +292,7 @@ varying float vDepth;
 varying float vDistance;
 uniform float uOpacity;
 uniform float uFlicker;
+uniform float uPixel;
 uniform float uAlpha;
 uniform float uSoft; // 1 for the glow pass: fades out across the whole width
 uniform float uDash; // dashes per object-space unit along the line; 0 for a solid line
@@ -281,8 +300,8 @@ uniform float uDashPhase;
 ${VOLUME}
 void main() {
   float d = abs(vEdge);
-  float hard = clamp(vHalf + 0.5 - d, 0.0, 1.0);
-  float soft = 1.0 - smoothstep(0.0, vHalf + 1.0, d);
+  float hard = clamp((vHalf - d) / uPixel + 0.5, 0.0, 1.0);
+  float soft = 1.0 - smoothstep(0.0, vHalf + uPixel, d);
   float depth = mix(1.0, 0.6, clamp((vDepth + 1.0) * 0.5, 0.0, 1.0));
   float dash = uDash > 0.0 ? 1.0 - smoothstep(0.55, 0.62, fract(vDistance * uDash - uDashPhase)) : 1.0;
   float a = mix(hard, soft * soft, uSoft) * dash * uAlpha * uOpacity * uFlicker * depth * volumeFade();
@@ -493,6 +512,20 @@ export default class HoloRenderer {
   constructor(tile) {
     this.tile = tile;
     this.renderTexture = PIXI.RenderTexture.create({width: 2, height: 2});
+    /**
+     * What the tile shows: the render texture placed (trim) over the on-screen part of the full layout (orig).
+     * Foundry's sprite meshes honour the trim, so the tile keeps its size, sorting, occlusion and masking.
+     */
+    this.texture = new PIXI.Texture(this.renderTexture.baseTexture, new PIXI.Rectangle(0, 0, 2, 2),
+      new PIXI.Rectangle(0, 0, 2, 2), new PIXI.Rectangle(0, 0, 2, 2));
+    /** Layout size, in layout pixels. */
+    this.width = 2;
+    this.height = 2;
+    /** Device pixels per layout pixel in the current render. */
+    this.resolution = 1;
+    this.fragUniform = new Float32Array([0, 0, 1, 1]);
+    /** The on-screen part of the layout, rendered this frame. */
+    this.viewport = new PIXI.Rectangle(0, 0, 2, 2);
     this.cameraUniform = new Float32Array(4);
     this.discCameraUniform = new Float32Array(4);
     this.targetUniform = new Float32Array(2);
@@ -516,14 +549,14 @@ export default class HoloRenderer {
     this.moteGeometry = createMotes(tile.document.id);
     this.moteShader = new PIXI.Shader(mote, {
       uCamera: this.cameraUniform, uTarget: this.targetUniform, uCenter: this.centerUniform, uColor: this.color,
-      uVolume: this.volumeUniform, uExtent: new Float32Array(2), uHeight: new Float32Array(2),
+      uVolume: this.volumeUniform, uFrag: this.fragUniform, uExtent: new Float32Array(2), uHeight: new Float32Array(2),
       uPhase: 0, uDensity: 0, uPointScale: 1, uOpacity: 1, uFlicker: 1
     });
     this.moteMesh = new PIXI.Mesh(this.moteGeometry, this.moteShader, this.state, PIXI.DRAW_MODES.POINTS);
     this.stage = new PIXI.Container();
     this.markerLayer = new MarkerLayer();
     const strokeUniforms = {uCamera: this.cameraUniform, uTarget: this.targetUniform, uCenter: this.centerUniform,
-      uVolume: this.volumeUniform};
+      uVolume: this.volumeUniform, uFrag: this.fragUniform};
     this.strokeLayer = new StrokeLayer(stroke, strokeUniforms, this.state);
     this.liveStrokeLayer = new StrokeLayer(stroke, strokeUniforms, this.state);
     this.measureLines = new StrokeLayer(stroke, strokeUniforms, this.state, {dash: MEASURE_DASHES});
@@ -585,7 +618,7 @@ export default class HoloRenderer {
   #lookUniforms(extra={}) {
     return {
       uCamera: this.cameraUniform, uTarget: this.targetUniform, uCenter: this.centerUniform, uColor: this.color,
-      uVolume: this.volumeUniform, uImage: PIXI.Texture.EMPTY,
+      uVolume: this.volumeUniform, uFrag: this.fragUniform, uImage: PIXI.Texture.EMPTY,
       uTint: 0, uOpacity: 1, uSolidity: 1, uScan: 0, uScanDensity: 0, uScanPhase: 0, uFlicker: 1,
       ...extra
     };
@@ -609,14 +642,20 @@ export default class HoloRenderer {
     if ( linkedSrc !== this.#linkedImageSrc ) this.#loadLinkedImage(linkedSrc);
     if ( data.mode === "text" ) {
       this.#textPanel ??= new TextPanel();
-      const {width, height} = this.tile.document;
-      this.#textPanel.update(data.text, width * FILL, height * FILL);
+      this.#updateTextPanel();
     }
     else {
       this.#textPanel?.destroy();
       this.#textPanel = null;
     }
     this.#updateGeometry();
+  }
+
+  /** Render the sign text for the panel's size at the current resolution (it only re-renders on a change). */
+  #updateTextPanel() {
+    const {width, height} = this.tile.document;
+    const devicePixels = this.resolution * (this.width / width);
+    this.#textPanel.update(this.data.text, width * FILL, height * FILL, devicePixels);
   }
 
   /** The texture shown on the panel or draped over the terrain. */
@@ -637,17 +676,21 @@ export default class HoloRenderer {
   }
 
   /**
-   * Match the render texture to the Tile's size.
+   * Match the layout to the Tile's size.
    * @returns {boolean} Whether the size changed
    */
   resize() {
     const {width, height} = this.tile.document;
-    const scale = Math.min(1, MAX_RT_SIZE / Math.max(width, height, 1));
+    const scale = Math.min(1, MAX_LAYOUT_SIZE / Math.max(width, height, 1));
     const w = Math.max(2, Math.round(width * scale));
     const h = Math.max(2, Math.round(height * scale));
-    const rt = this.renderTexture;
-    const changed = (rt.width !== w) || (rt.height !== h);
-    if ( changed ) rt.resize(w, h);
+    const changed = (this.width !== w) || (this.height !== h);
+    if ( changed ) {
+      this.width = w;
+      this.height = h;
+      this.texture.orig = new PIXI.Rectangle(0, 0, w, h);
+      this.texture.updateUvs();
+    }
     this.centerUniform.set([w / 2, h / 2]);
     this.scanDensity = (height / SCANLINE_SPACING) / h;
     return changed;
@@ -691,14 +734,13 @@ export default class HoloRenderer {
    */
   #updateGeometry() {
     const {mode, look: {lift}} = this.data;
-    const rt = this.renderTexture;
     const fitRect = mode === "text";
     let hx;
     let hz;
     if ( fitRect ) {
-      const longest = Math.max(rt.width, rt.height);
-      hx = rt.width / longest;
-      hz = rt.height / longest;
+      const longest = Math.max(this.width, this.height);
+      hx = this.width / longest;
+      hz = this.height / longest;
     } else {
       const image = this.#image;
       const aspect = (image.width && image.height) ? (image.width / image.height) : 1;
@@ -706,8 +748,8 @@ export default class HoloRenderer {
       hx = aspect / diagonal;
       hz = 1 / diagonal;
     }
-    this.volumeUniform.set([rt.width, rt.height, fitRect ? 1 : 0]);
-    const radiusPixels = (fitRect ? Math.max(rt.width, rt.height) : Math.min(rt.width, rt.height)) / 2;
+    this.volumeUniform.set([this.width, this.height, fitRect ? 1 : 0]);
+    const radiusPixels = (fitRect ? Math.max(this.width, this.height) : Math.min(this.width, this.height)) / 2;
     this.pixelsPerUnit = radiusPixels * FILL / (FOCAL / BASE_DIST);
 
     const resolution = Math.clamp(Math.round(this.data.terrain.resolution), 16, 256);
@@ -818,14 +860,13 @@ export default class HoloRenderer {
     const density = Math.clamp(look.motes, 0, 1);
     this.moteMesh.visible = density > 0;
     if ( !this.moteMesh.visible ) return;
-    const rt = this.renderTexture;
     const uniforms = this.moteShader.uniforms;
     uniforms.uDensity = density;
     uniforms.uPhase = (seconds / MOTE_PERIOD) % 1;
     uniforms.uExtent.set([this.#hx * 0.95, this.#hz * 0.95]);
     // They rise from the floating surface to a little above the highest terrain.
     uniforms.uHeight.set([look.lift, (showTerrain ? terrain.relief : 0) + 0.4]);
-    uniforms.uPointScale = Math.min(rt.width, rt.height) / 250;
+    uniforms.uPointScale = (Math.min(this.width, this.height) / 250) * this.resolution;
     uniforms.uOpacity = look.opacity;
     uniforms.uFlicker = this.#flicker;
   }
@@ -860,13 +901,91 @@ export default class HoloRenderer {
 
   /** Scene pixels covered by one footprint unit at the camera target, at the given camera distance. */
   sceneUnitsPerUnit(dist) {
-    return this.pixelsPerUnit * (FOCAL / dist) * (this.tile.document.width / this.renderTexture.width);
+    return this.pixelsPerUnit * (FOCAL / dist) * (this.tile.document.width / this.width);
+  }
+
+  /**
+   * Work out which part of the hologram is on screen and at what pixel density, and fit the render texture to it.
+   * Call before update() and render() each frame.
+   * @param {PIXI.Renderer} renderer
+   * @returns {boolean}   False when none of the hologram is on screen (nothing to render)
+   */
+  fitViewport(renderer) {
+    const mesh = this.tile.mesh;
+    const {width: W, height: H} = this;
+    // Map the screen's corners into the mesh's local space (layout pixels around its anchor). The transforms are
+    // composed fresh rather than read from worldTransform, which is only updated when the canvas renders (after us),
+    // so a pan or zoom this frame would otherwise leave an unrendered strip at the edge.
+    const chain = [];
+    for ( let node = mesh; node; node = node.parent ) {
+      node.transform.updateLocalTransform();
+      chain.unshift(node.transform.localTransform);
+    }
+    const toLocal = point => chain.reduce((p, matrix) => matrix.applyInverse(p, p), new PIXI.Point(point.x, point.y));
+    const toScreen = point => chain.reduceRight((p, matrix) => matrix.apply(p, p), new PIXI.Point(point.x, point.y));
+    const {width: sw, height: sh} = renderer.screen;
+    const corners = [[0, 0], [sw, 0], [0, sh], [sw, sh]].map(([x, y]) => toLocal({x, y}));
+    const ax = mesh.anchor.x * W;
+    const ay = mesh.anchor.y * H;
+    const left = Math.max(0, Math.floor(Math.min(...corners.map(p => p.x)) + ax) - 1);
+    const right = Math.min(W, Math.ceil(Math.max(...corners.map(p => p.x)) + ax) + 1);
+    const top = Math.max(0, Math.floor(Math.min(...corners.map(p => p.y)) + ay) - 1);
+    const bottom = Math.min(H, Math.ceil(Math.max(...corners.map(p => p.y)) + ay) + 1);
+    if ( (right <= left) || (bottom <= top) ) return false;
+
+    // Device pixels per layout pixel: native, at least enough to supersample a tiny hologram, at most what fits a
+    // texture. In quarter-octave steps, since text (labels, signs) is re-rendered whenever it changes.
+    const origin = toScreen({x: 0, y: 0});
+    const step = toScreen({x: 1, y: 0});
+    const native = Math.hypot(step.x - origin.x, step.y - origin.y) * renderer.resolution;
+    let resolution = Math.max(native, Math.min(MIN_RENDER_PIXELS / Math.max(W, H), native * MAX_SUPERSAMPLE));
+    resolution = 2 ** (Math.ceil(Math.log2(resolution) * 4) / 4);
+    const maxSize = Math.min(renderer.gl.getParameter(renderer.gl.MAX_TEXTURE_SIZE), MAX_RENDER_SIZE);
+    resolution = Math.min(resolution, maxSize / Math.max(right - left, bottom - top));
+    this.viewport = new PIXI.Rectangle(left, top, right - left, bottom - top);
+    this.fragUniform.set([left, top, 1 / resolution, 1 / resolution]);
+    if ( this.resolution !== resolution ) {
+      this.resolution = resolution;
+      if ( this.#textPanel ) this.#updateTextPanel();
+    }
+    this.#allocate(Math.ceil((right - left) * resolution), Math.ceil((bottom - top) * resolution));
+    return true;
+  }
+
+  /**
+   * Size the render texture's used area to w×h device pixels. The shown texture maps that area (its frame, in
+   * device pixels) onto the on-screen part of the layout (its trim, in layout pixels). The memory behind it only
+   * grows in steps, or shrinks once it is far too big, so panning and zooming rarely reallocate it.
+   */
+  #allocate(w, h) {
+    const base = this.renderTexture.baseTexture;
+    const grow = (base.width < w) || (base.height < h);
+    const shrink = (base.width * base.height) > (4 * Math.max(w * h, 512 * 512));
+    // Frames must fit the base texture whenever it changes size: set them after growing, before shrinking.
+    if ( !grow ) this.#setFrames(w, h);
+    const bucket = n => Math.ceil(n / 256) * 256;
+    if ( grow ) base.resize(Math.max(base.width, bucket(w)), Math.max(base.height, bucket(h)));
+    else if ( shrink ) base.resize(bucket(w), bucket(h));
+    if ( grow ) this.#setFrames(w, h);
+  }
+
+  #setFrames(w, h) {
+    const rt = this.renderTexture;
+    rt.frame = new PIXI.Rectangle(0, 0, w, h);
+    rt.updateUvs();
+    const texture = this.texture;
+    texture.frame = new PIXI.Rectangle(0, 0, w, h);
+    texture.trim = this.viewport.clone();
+    texture.updateUvs();
   }
 
   /** @param {PIXI.Renderer} renderer */
   render(renderer) {
     this.#updateGeometry();
-    renderer.render(this.stage, {renderTexture: this.renderTexture, clear: true});
+    const {x, y} = this.viewport;
+    const r = this.resolution;
+    const transform = new PIXI.Matrix(r, 0, 0, r, -x * r, -y * r);
+    renderer.render(this.stage, {renderTexture: this.renderTexture, clear: true, transform});
   }
 
   /* -------------------------------------------- */
@@ -1017,10 +1136,9 @@ export default class HoloRenderer {
     const liveMeasure = this.#liveMeasure ? [asLine({id: "live", ...this.#liveMeasure})] : [];
     this.liveMeasureLines.sync(liveMeasure, `${shape}|${this.#liveMeasureVersion}`, surface, 0);
 
-    const rt = this.renderTexture;
-    this.#strokeHalfWidth = Math.clamp(Math.min(rt.width, rt.height) * 0.0022, 1, 5);
+    this.#strokeHalfWidth = Math.clamp(Math.min(this.width, this.height) * 0.0022, 1, 5);
     const style = {
-      opacity: look.opacity, flicker: this.#flicker, width: this.#strokeHalfWidth,
+      opacity: look.opacity, flicker: this.#flicker, width: this.#strokeHalfWidth, pixel: 1 / this.resolution,
       dashPhase: ((game.time.serverTime / 1000) * 1.5) % 1
     };
     for ( const layer of [this.strokeLayer, this.liveStrokeLayer, this.measureLines, this.liveMeasureLines] ) {
@@ -1031,11 +1149,10 @@ export default class HoloRenderer {
 
   /** Endpoint dots and distance labels, placed with the camera as drawn this frame. */
   #layoutMeasureLabels(measures) {
-    const rt = this.renderTexture;
-    const size = Math.clamp(Math.min(rt.width, rt.height) * 0.016, 6, 24);
+    const size = Math.clamp(Math.min(this.width, this.height) * 0.016, 6, 24);
     const all = this.#liveMeasure ? [...measures, {id: "live", ...this.#liveMeasure}] : measures;
     const labels = all.map(({id, points}) => ({id, text: this.#distanceLabel(points)}));
-    const sprites = this.measureLabels.sync(labels, size, this.selectedMeasure);
+    const sprites = this.measureLabels.sync(labels, size, this.selectedMeasure, this.resolution);
     const project = this.#projector();
     for ( const {id, points: [ua, va, ub, vb]} of all ) {
       const sprite = sprites.get(id);
@@ -1162,10 +1279,10 @@ export default class HoloRenderer {
 
   #layoutMarkers(pitch) {
     const {look} = this.data;
-    const rt = this.renderTexture;
     const markers = this.markers;
-    const size = Math.clamp(Math.min(rt.width, rt.height) * 0.022, 7, 32);
-    this.markerLayer.sync(markers, {size, labels: look.labels, selected: this.selectedMarker});
+    const size = Math.clamp(Math.min(this.width, this.height) * 0.022, 7, 32);
+    this.markerLayer.sync(markers, {size, labels: look.labels, selected: this.selectedMarker,
+      resolution: this.resolution});
     for ( const marker of markers ) {
       const surface = this.#surfacePosition(marker.u, marker.v);
       const base = this.#project(surface);
@@ -1187,7 +1304,7 @@ export default class HoloRenderer {
   toTexturePoint(point) {
     const mesh = this.tile.mesh;
     const local = mesh.toLocal(new PIXI.Point(point.x, point.y), canvas.stage);
-    return {x: local.x + (mesh.anchor.x * this.renderTexture.width), y: local.y + (mesh.anchor.y * this.renderTexture.height)};
+    return {x: local.x + (mesh.anchor.x * this.width), y: local.y + (mesh.anchor.y * this.height)};
   }
 
   /**
@@ -1196,8 +1313,7 @@ export default class HoloRenderer {
    */
   toCanvasPoint(point) {
     const mesh = this.tile.mesh;
-    const local = new PIXI.Point(point.x - (mesh.anchor.x * this.renderTexture.width),
-      point.y - (mesh.anchor.y * this.renderTexture.height));
+    const local = new PIXI.Point(point.x - (mesh.anchor.x * this.width), point.y - (mesh.anchor.y * this.height));
     return canvas.stage.toLocal(local, mesh);
   }
 
@@ -1299,6 +1415,7 @@ export default class HoloRenderer {
     this.moteMesh.destroy();
     this.stage.destroy({children: true});
     destroyGeometries(this.discGeometry, this.panelGeometry, this.moteGeometry);
+    this.texture.destroy(false);
     this.renderTexture.destroy(true);
   }
 }

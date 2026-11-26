@@ -7,6 +7,7 @@ const holograms = new Map();
 /**
  * Hit-testing normally reads the tile texture's alpha back from the GPU once and caches it. For a live render
  * texture that snapshot would be stale (and the readback costly), so the whole tile rectangle counts as solid.
+ * Foundry drops it whenever the texture updates (e.g. the render texture is reallocated), so it is set every frame.
  */
 const SOLID_ALPHA = Object.freeze({data: new Uint8Array([255]), width: 1, height: 1, minX: 0, minY: 0, maxX: 1, maxY: 1});
 
@@ -82,7 +83,7 @@ function adoptMesh(tile) {
  */
 function claimMesh(tile, holo) {
   const mesh = tile.mesh;
-  if ( mesh.texture !== holo.renderTexture ) mesh.texture = holo.renderTexture;
+  if ( mesh.texture !== holo.texture ) mesh.texture = holo.texture;
   mesh._textureAlphaData = SOLID_ALPHA;
   tile.renderFlags.set({refreshSize: true});
 }
@@ -98,7 +99,7 @@ function detach(tile, {restore=true}={}) {
   if ( !holo ) return;
   holograms.delete(tile);
   const mesh = tile.mesh;
-  if ( restore && mesh && !mesh.destroyed && (mesh.texture === holo.renderTexture) ) {
+  if ( restore && mesh && !mesh.destroyed && (mesh.texture === holo.texture) ) {
     // An adopted mesh (no image) goes back to Foundry's placeholder via a redraw.
     if ( tile.texture ) {
       mesh.texture = tile.texture;
@@ -122,17 +123,18 @@ function onUpdateTile(doc, changes) {
   if ( flagsChanged && doc.object ) syncTile(doc.object);
 }
 
-function isOnScreen(tile, screen) {
+function isShown(tile) {
   const mesh = tile.mesh;
-  if ( !tile.visible || !mesh?.visible || !mesh.renderable || (mesh.worldAlpha <= 0) ) return false;
-  return mesh.getBounds(true).intersects(screen);
+  return tile.visible && !!mesh?.visible && mesh.renderable && (mesh.worldAlpha > 0);
 }
 
 function renderHolograms() {
   if ( !holograms.size ) return;
   const {renderer, ticker} = canvas.app;
   for ( const [tile, holo] of holograms ) {
-    if ( !isOnScreen(tile, renderer.screen) ) continue;
+    // Only the part of the hologram on screen is rendered, at the screen's pixel density.
+    if ( !isShown(tile) || !holo.fitViewport(renderer) ) continue;
+    tile.mesh._textureAlphaData = SOLID_ALPHA;
     holo.update(ticker.deltaMS);
     holo.render(renderer);
   }

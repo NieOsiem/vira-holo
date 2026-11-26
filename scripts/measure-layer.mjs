@@ -23,10 +23,11 @@ class MeasureSprite {
   }
 
   /** Redraw the label when its text, size or highlight changes. */
-  draw(text, size, selected) {
-    const key = [text, size, selected].join("|");
+  draw(text, size, selected, resolution) {
+    const key = [text, size, selected, resolution].join("|");
     if ( key === this.key ) return;
     this.key = key;
+    this.text.resolution = resolution; // Text is a bitmap: render it at the hologram's resolution
     this.text.style.fontSize = Math.round(size * 1.3);
     this.text.text = text;
     const padX = size * 0.6;
@@ -76,9 +77,10 @@ export default class MeasureLayer {
    * @param {{id: string, text: string}[]} labels
    * @param {number} size
    * @param {string|null} selected
+   * @param {number} [resolution=1]   Device pixels per layout pixel
    * @returns {Map<string, MeasureSprite>}
    */
-  sync(labels, size, selected) {
+  sync(labels, size, selected, resolution=1) {
     const ids = new Set(labels.map(l => l.id));
     for ( const [id, sprite] of this.#sprites ) {
       if ( ids.has(id) ) continue;
@@ -92,7 +94,7 @@ export default class MeasureLayer {
         this.#sprites.set(id, sprite);
         this.container.addChild(sprite.container);
       }
-      sprite.draw(text, size, id === selected);
+      sprite.draw(text, size, id === selected, resolution);
     }
     return this.#sprites;
   }
