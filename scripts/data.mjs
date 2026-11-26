@@ -48,7 +48,7 @@ export const DEFAULTS = Object.freeze({
   terrain: {
     /** Greyscale image covering the same area as the tile's image; brighter is higher. */
     heightmap: "",
-    relief: 0.4,
+    relief: 1.5,
     resolution: 160,
     wire: 0.6,
     contours: 0.5,

@@ -22,7 +22,7 @@ const SLIDERS = {
     ["spin", -0.5, 0.5, 0.01]
   ],
   terrain: [
-    ["relief", 0, 1.5, 0.05],
+    ["relief", 0, 3, 0.05],
     ["resolution", 32, 256, 16],
     ["wire", 0, 1, 0.05],
     ["contours", 0, 1, 0.05]

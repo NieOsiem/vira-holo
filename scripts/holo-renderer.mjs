@@ -46,6 +46,8 @@ const WIRE_LINES = 40;
 const CONTOUR_LEVELS = 12;
 /** Height (0-1) at which the heightmap counts as land: the coastline of an island, drawn in the wireframe styles. */
 const COAST_HEIGHT = 0.012;  // ~3/255: heights are read back as 8-bit
+/** World units a height of 1.0 rises per unit of the `relief` setting: keeps useful reliefs around 0.2-1.5. */
+const RELIEF_SCALE = 0.1;
 /**
  * View depth mapped to the far end of the depth buffer (the near end is the camera). Everything drawn is well within
  * it at any camera distance, so one fixed range serves every mesh, the projector disc's own camera included.
@@ -978,7 +980,7 @@ export default class HoloRenderer {
       const {surfaceShader, wireShader, linesShader} = this.#terrain;
       for ( const {uniforms} of [surfaceShader, wireShader, linesShader] ) {
         uniforms.uHeight = this.#heightmap;
-        uniforms.uRelief = terrain.relief;
+        uniforms.uRelief = terrain.relief * RELIEF_SCALE;
       }
       surfaceShader.uniforms.uContours = linesShader.uniforms.uContours = terrain.contours;
       // A wireframe-only display always shows its wireframe, whatever the overlay setting.
@@ -1004,7 +1006,7 @@ export default class HoloRenderer {
     uniforms.uPhase = (seconds / MOTE_PERIOD) % 1;
     uniforms.uExtent.set([this.#hx * 0.95, this.#hz * 0.95]);
     // They rise from the floating surface to a little above the highest terrain.
-    uniforms.uHeight.set([look.lift, (showTerrain ? terrain.relief : 0) + 0.4]);
+    uniforms.uHeight.set([look.lift, (showTerrain ? terrain.relief * RELIEF_SCALE : 0) + 0.4]);
     uniforms.uPointScale = (Math.min(this.width, this.height) / 250) * this.resolution;
     uniforms.uOpacity = this.#opacity;
     uniforms.uFlicker = this.#flicker;
@@ -1550,7 +1552,7 @@ export default class HoloRenderer {
   /** Object-space position of an image point on the hologram's surface. */
   #surfacePosition(u, v) {
     const {lift} = this.data.look;
-    const relief = this.data.terrain.relief;
+    const relief = this.data.terrain.relief * RELIEF_SCALE;
     return {
       x: ((u * 2) - 1) * this.#hx,
       y: lift + (this.heightAt(u, v) * relief),
@@ -1750,7 +1752,7 @@ export default class HoloRenderer {
       return inside(uv) ? uv : null;
     }
 
-    const relief = this.data.terrain.relief;
+    const relief = this.data.terrain.relief * RELIEF_SCALE;
     const above = t => {
       const p = at(t);
       const uv = toUV(p);
