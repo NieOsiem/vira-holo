@@ -58,5 +58,12 @@
     </div>
     {{/unless}}
     <p class="hint">{{localize "VIRAHOLO.Maps.TravelHint"}}</p>
+    <div class="form-group">
+      <label for="{{partId}}-recenter-up">{{localize "VIRAHOLO.Maps.RecenterUp"}}</label>
+      <div class="form-fields">
+        <input type="checkbox" id="{{partId}}-recenter-up" name="{{flags}}.recenterUp" {{checked holo.recenterUp}}>
+      </div>
+      <p class="hint">{{localize "VIRAHOLO.Maps.RecenterUpHint"}}</p>
+    </div>
   </fieldset>
 </section>

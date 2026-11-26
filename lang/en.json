@@ -179,6 +179,8 @@
       "Home": "Home",
       "GoHome": "Back to this hologram's own content",
       "TravelHint": "Travelling changes the view for everyone watching this hologram, like moving its camera.",
+      "RecenterUp": "Recenter when going up",
+      "RecenterUpHint": "After going up to a parent map the view ends centred, easing there from the spot you left, instead of staying on that spot. Set per tile.",
       "OwnLook": "Own look for this map",
       "OwnLookHint": "Off: this map is shown with the hologram's look. On: changes below are saved with the map and shown on any hologram that travels here.",
       "Circular": "A map can't be placed on itself or on a map inside it."

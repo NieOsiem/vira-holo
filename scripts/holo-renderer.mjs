@@ -56,6 +56,8 @@ const WIRE_DEPTH_BIAS = 0.0006;
 const STROKE_DEPTH_BIAS = 0.003;
 /** How long the hologram takes to settle after travelling to another map. */
 const TRAVEL_MS = 700;
+/** How long the view takes to pan from the spot a map was left at to the centre of its parent (tiles that recentre). */
+const RECENTER_MS = 1100;
 /** Content scale a travel starts from: a map entered grows into view, a parent shrinks into it. */
 const TRAVEL_SCALE = {in: 0.3, out: 2.5};
 /** Most data motes, at full density. */
@@ -678,6 +680,8 @@ export default class HoloRenderer {
   #mapKey;
   /** Travel transition in progress: {start, from (content scale)}, or null. */
   #travel = null;
+  /** Going up with `recenterUp`: the spot (u, v) the old map was at, which the view eases from. */
+  #recenter = null;
   /** Content opacity factor during a travel transition. */
   #fade = 1;
 
@@ -712,7 +716,11 @@ export default class HoloRenderer {
       this.#liveMeasurePoints.clear();
     }
     const mapKey = data.map.uuid ?? "";
-    if ( (this.#mapKey !== undefined) && (mapKey !== this.#mapKey) ) this.#startTravel(data.map.parent?.uuid === this.#mapKey);
+    if ( (this.#mapKey !== undefined) && (mapKey !== this.#mapKey) ) {
+      this.#startTravel(data.map.parent?.uuid === this.#mapKey);
+      const left = data.recenterUp ? data.map.children.find(c => c.uuid === this.#mapKey) : null;
+      this.#recenter = left ? {start: performance.now(), u: left.u, v: left.v} : null;
+    }
     this.#mapKey = mapKey;
     this.color.set(new PIXI.Color(data.look.color).toRgbArray());
     this.resize();
@@ -898,7 +906,7 @@ export default class HoloRenderer {
     const scale = this.#updateTravel();
     this.cameraUniform.set([this.displayYaw, pitch, dist, this.pixelsPerUnit * scale]);
     this.discCameraUniform.set([this.displayYaw, pitch, BASE_DIST, this.pixelsPerUnit]);
-    this.targetUniform.set([camera.x, camera.z]);
+    this.targetUniform.set(this.#recenteredTarget(camera));
 
     this.#flickerTimer -= deltaMS;
     if ( this.#flickerTimer <= 0 ) {
@@ -1027,6 +1035,26 @@ export default class HoloRenderer {
     const eased = 1 - ((1 - t) ** 3);
     this.#fade = Math.clamp(t * 1.5, 0, 1);
     return this.#travel.from + ((1 - this.#travel.from) * eased);
+  }
+
+  /**
+   * Where the view looks: the camera's point, or, just after going up on a tile that recentres, a point easing from
+   * the spot the old map was at to the saved (centred) one. Grabbing the hologram ends the pan.
+   * @param {object} camera
+   * @returns {number[]}
+   */
+  #recenteredTarget({x, z}) {
+    const pan = this.#recenter;
+    if ( !pan ) return [x, z];
+    const t = (performance.now() - pan.start) / RECENTER_MS;
+    if ( (t >= 1) || this.#dragging ) {
+      this.#recenter = null;
+      return [x, z];
+    }
+    const left = 1 - (t * t * (3 - (2 * t)));
+    const spotX = Math.clamp(((pan.u * 2) - 1) * this.#hx, -1, 1);
+    const spotZ = Math.clamp((1 - (pan.v * 2)) * this.#hz, -1, 1);
+    return [x + ((spotX - x) * left), z + ((spotZ - z) * left)];
   }
 
   /** The camera in effect: a live (unsaved) one while being dragged, otherwise the saved one. */

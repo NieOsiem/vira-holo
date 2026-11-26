@@ -121,7 +121,8 @@ export function travelTarget(doc, uuid) {
 
 /**
  * The camera to arrive with: centred and at the default distance, or, going up, centred on the spot the map just
- * left sits at on its parent. Yaw, pitch and spin carry over.
+ * left sits at on its parent (unless the tile recentres, in which case the renderer eases the view from that spot).
+ * Yaw, pitch and spin carry over.
  * @param {object} data   Hologram data before travelling
  * @param {string} uuid    The map travelled to
  * @returns {Promise<object>}
@@ -129,7 +130,7 @@ export function travelTarget(doc, uuid) {
 export async function arrivalCamera(data, uuid) {
   const camera = {...data.camera, x: 0, z: 0, dist: DEFAULTS.camera.dist};
   delete camera.map;
-  if ( (data.map.parent?.uuid !== uuid) || !data.map.position ) return camera;
+  if ( data.recenterUp || (data.map.parent?.uuid !== uuid) || !data.map.position ) return camera;
   const {hx, hz} = await footprintOf(getStateJournal(data.map.parent.uuid));
   const {u, v} = data.map.position;
   camera.x = Math.clamp(((u * 2) - 1) * hx, -1, 1);
