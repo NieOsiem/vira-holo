@@ -200,15 +200,16 @@ function swallow(event) {
  * The topmost hologram under the pointer that this user may drive, unless something interactive on the active
  * layer (a token, a drawing, ...) is under the pointer: those keep their normal behaviour.
  * @param {PointerEvent|WheelEvent} event
+ * @param {boolean} [anyUser=false]   Also holograms this user can't drive (for pings, which everyone may send)
  * @returns {{tile: Tile, holo: HoloRenderer}|null}
  */
-function hologramAt(event) {
+function hologramAt(event, anyUser=false) {
   if ( !canvas?.ready || (event.target !== canvas.app.view) || canvas.tiles.active ) return null;
   const point = canvasPoint(event);
   let found = null;
   for ( const [tile, holo] of getHolograms() ) {
     if ( !holo.data.interactive || !tile.visible || !tile.mesh?.visible ) continue;
-    if ( !canDrive(game.user, tile.document) || !insideProjection(tile, point) ) continue;
+    if ( (!anyUser && !canDrive(game.user, tile.document)) || !insideProjection(tile, point) ) continue;
     if ( !game.user.isGM && !canvas.visibility.testVisibility(tile.center, {object: tile}) ) continue;
     if ( !found || isAbove(tile, found.tile) ) found = {tile, holo};
   }
@@ -253,6 +254,12 @@ function placeableAt(event) {
 function onPointerDown(event) {
   if ( (event.button !== 0) || isRingEvent(event) || isCardEvent(event) || isMeasureCardEvent(event) ) return;
   const hit = hologramAt(event);
+  // Everyone may ping (Ctrl+click), whether or not they can drive the hologram.
+  const pinging = !hit && (event.ctrlKey || event.metaKey) && hologramAt(event, true);
+  if ( pinging ) {
+    swallow(event);
+    return ping(pinging.tile, pinging.holo, event);
+  }
   if ( hit?.tile !== engaged ) setEngaged(hit);
   if ( !hit ) return;
   swallow(event);

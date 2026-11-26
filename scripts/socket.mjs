@@ -82,9 +82,10 @@ function onCamera({uuid, camera}, sender) {
 
 function onPreview({uuid, preview}, sender) {
   const doc = fromUuidSync(uuid, {strict: false});
-  if ( !doc || !canDrive(sender, doc) ) return;
   const clean = sanitizePreview(preview);
-  if ( clean ) showPreview(doc, sender.id, clean);
+  // Edits in progress come from drivers only; anyone may ping.
+  if ( !doc || !clean || ((clean.kind !== "ping") && !canDrive(sender, doc)) ) return;
+  showPreview(doc, sender.id, clean);
 }
 
 /** A preview with every field checked, or null. */
