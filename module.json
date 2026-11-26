@@ -1,0 +1,21 @@
+{
+  "id": "vira-holo",
+  "title": "Vira Holo",
+  "description": "Displays holographic projections of maps, images, and text in Foundry VTT.",
+  "version": "0.1.0",
+  "authors": [],
+  "esmodules": [
+    "vira-holo.mjs"
+  ],
+  "styles": [
+    "vira-holo.css"
+  ],
+  "languages": [],
+  "compatibility": {
+    "minimum": "12",
+    "verified": "14"
+  },
+  "url": "",
+  "manifest": "",
+  "download": ""
+}
