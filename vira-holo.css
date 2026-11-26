@@ -70,6 +70,13 @@
   box-shadow: 0 0 calc(var(--glyph-size) * 0.2) var(--holo-color);
 }
 
+#hud .vira-holo-ring > button:disabled {
+  cursor: default;
+  color: color-mix(in srgb, var(--holo-color) 22%, transparent);
+  filter: drop-shadow(0 0 calc(var(--glyph-size) * 0.04) rgb(0 0 0 / 0.7));
+  transform: none;
+}
+
 /* Second mode of a two-mode tool: two dots. */
 #hud .vira-holo-ring > button.on.tier-2::after {
   margin-left: -15%;

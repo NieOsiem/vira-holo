@@ -21,7 +21,9 @@
         "1": "Thin",
         "2": "Medium",
         "3": "Thick"
-      }
+      },
+      "undo": "Undo your last change to pins, drawings or measurements",
+      "redo": "Redo"
     },
     "Config": {
       "Open": "Hologram",

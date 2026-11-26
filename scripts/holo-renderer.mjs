@@ -799,6 +799,17 @@ export default class HoloRenderer {
   }
 
   /**
+   * An annotation as this client shows it (strokes and measurements still on their way to the GM included).
+   * @param {"markers"|"strokes"|"measures"} list
+   * @param {string} id
+   * @returns {object|null}
+   */
+  annotation(list, id) {
+    const items = (list === "markers") ? this.data.annotations.markers : this.#shown(list);
+    return items.find(item => item.id === id) ?? null;
+  }
+
+  /**
    * Show a measurement with moved ends until the save arrives, or stop showing it that way.
    * @param {string} id
    * @param {number[]|null} points

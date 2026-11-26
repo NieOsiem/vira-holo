@@ -10,6 +10,8 @@ const GLYPHS = {
   draw: '<path d="M17 3a2.8 2.8 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/>',
   erase: '<path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21"/><path d="M22 21H7"/>',
   measure: '<path d="M2 12h20M6 8v8M12 6v12M18 8v8"/>',
+  undo: '<path d="M3 7v6h6"/><path d="M21 17a9 9 0 0 0-15-6.7L3 13"/>',
+  redo: '<path d="M21 7v6h-6"/><path d="M3 17a9 9 0 0 1 15-6.7L21 13"/>',
   settings: '<path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/>'
     + '<circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/>'
 };
@@ -42,7 +44,7 @@ export function showRing(tile, actions) {
   hideRing();
   const element = document.createElement("div");
   element.className = "vira-holo-ring";
-  const names = ["recenter", "spin", "waypoint", "draw", "erase", "measure", ...(game.user.isGM ? ["settings"] : [])];
+  const names = ["recenter", "spin", "waypoint", "draw", "erase", "measure", "undo", "redo", ...(game.user.isGM ? ["settings"] : [])];
   const buttons = names.map((name, index) => {
     const button = document.createElement("button");
     button.type = "button";
@@ -132,6 +134,16 @@ export function setStrip(options) {
   ring.strip = strip;
   ring.element.append(strip);
   refreshRing();
+}
+
+/**
+ * Enable or dim a glyph whose action may have nothing to do (undo, redo).
+ * @param {string} name
+ * @param {boolean} enabled
+ */
+export function setGlyphEnabled(name, enabled) {
+  const button = ring?.element.querySelector(`[data-glyph="${name}"]`);
+  if ( button ) button.disabled = !enabled;
 }
 
 /** Did this event happen on the ring? */

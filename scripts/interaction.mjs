@@ -1,12 +1,12 @@
 import {DEFAULTS, MARKER_GLYPHS, MAX_MEASURES, MAX_STROKES, MAX_STROKE_POINTS, canDrive, contrastingInk, defaultCamera,
   sanitizeScale} from "./data.mjs";
-import {editAnnotations} from "./annotations.mjs";
+import * as history from "./history.mjs";
 import HoloConfig from "./holo-config.mjs";
 import {MAX_DIST, MAX_PITCH, MIN_DIST, MIN_PITCH} from "./holo-renderer.mjs";
 import {closeCard, isCardEvent, openCard, updateCard} from "./pin-card.mjs";
 import {closeMeasureCard, isMeasureCardEvent, openMeasureCard, updateMeasureCard} from "./measure-card.mjs";
 import {writeHolo} from "./links.mjs";
-import {hideRing, isRingEvent, refreshRing, setGlyphOn, setStrip, showRing} from "./ring.mjs";
+import {hideRing, isRingEvent, refreshRing, setGlyphEnabled, setGlyphOn, setStrip, showRing} from "./ring.mjs";
 import {simplifyStroke} from "./stroke-layer.mjs";
 import {getHolograms, showLiveCamera} from "./tile-holo.mjs";
 import {broadcastCamera, saveDriverChanges} from "./socket.mjs";
@@ -74,6 +74,7 @@ export function registerInteraction() {
     if ( tile === engaged ) setEngaged(null);
   });
   Hooks.on("canvasTearDown", () => setEngaged(null));
+  history.onHistoryChange(refreshHistoryGlyphs);
   Hooks.once("canvasReady", () => {
     canvas.app.ticker.add(updateCard);
     canvas.app.ticker.add(updateMeasureCard);
@@ -96,8 +97,18 @@ function setEngaged(hit) {
     erase: () => toggleTool("erase", holo),
     // The ruler has two modes: off → making measurements → moving their ends → off.
     measure: () => setTool((tool === "measure") ? "adjust" : ((tool === "adjust") ? null : "measure"), holo),
+    undo: () => history.undo(tile.document),
+    redo: () => history.redo(tile.document),
     settings: () => HoloConfig.open(tile.document)
   });
+  refreshHistoryGlyphs();
+}
+
+/** Dim undo and redo when there's nothing to take back or do again on the engaged hologram. */
+function refreshHistoryGlyphs() {
+  if ( !engaged ) return;
+  setGlyphEnabled("undo", history.canUndo(engaged.document));
+  setGlyphEnabled("redo", history.canRedo(engaged.document));
 }
 
 /** Switch a ring tool on (switching the others off), or off if it already is. */
@@ -220,7 +231,10 @@ function onPointerDown(event) {
   }
   const texturePoint = holo.toTexturePoint(canvasPoint(event));
   const erasing = ((tool === "erase") && !event.shiftKey) ? texturePoint : null;
-  if ( erasing ) eraseAlong(tile, holo, erasing, erasing);
+  if ( erasing ) {
+    history.beginGroup(tile.document); // One scrub is one undo step
+    eraseAlong(tile, holo, erasing, erasing);
+  }
   // A pressed pin opens its card on click; it's only dragged when unlocked (a locked pin lets the drag orbit).
   const pressed = ["draw", "erase", "measure", "adjust"].includes(tool) ? null : holo.markerAt(texturePoint);
   const locked = !!holo.markers.find(m => m.id === pressed)?.locked;
@@ -307,6 +321,7 @@ function onPointerUp(event) {
   drag = null;
   holo.dragging = false;
   if ( stroke ) holo.setLiveStroke(null);
+  if ( erasing ) history.endGroup();
   if ( tile.destroyed ) return; // Deleted, or the scene changed, mid-drag
 
   if ( stroke ) return finishStroke(tile, holo, stroke);
@@ -315,14 +330,20 @@ function onPointerUp(event) {
   if ( measureEnd ) {
     const {id, points} = measureEnd;
     // The moved points stay on show until the save comes back (see HoloRenderer#configure).
-    if ( moved ) editAnnotations(tile.document, "measures", {type: "update", id, changes: {points}});
+    if ( moved ) {
+      history.edit(tile.document, "measures", {type: "update", id, changes: {points}},
+        holo.data.annotations.measures.find(m => m.id === id));
+    }
     else holo.setLiveMeasurePoints(id, null);
     return;
   }
   if ( label && !moved ) return openMeasure(tile, holo, label);
   if ( pressed && !moved ) return openMarkerCard(tile, holo, pressed);
   if ( marker ) {
-    if ( position ) editAnnotations(tile.document, "markers", {type: "update", id: marker, changes: position});
+    if ( position ) {
+      history.edit(tile.document, "markers", {type: "update", id: marker, changes: position},
+        holo.annotation("markers", marker));
+    }
     return;
   }
   if ( moved ) {
@@ -349,7 +370,7 @@ function placeMarker(tile, holo, point) {
   const position = holo.surfaceAt(holo.toTexturePoint(point));
   if ( !position ) return;
   const marker = {id: foundry.utils.randomID(), ...position, label: "", glyph: MARKER_GLYPHS[0], color: currentInk(holo)};
-  editAnnotations(tile.document, "markers", {type: "add", item: marker});
+  history.edit(tile.document, "markers", {type: "add", item: marker});
   openMarkerCard(tile, holo, marker.id);
 }
 
@@ -394,8 +415,9 @@ function eraseAlong(tile, holo, from, to) {
   if ( tile.destroyed ) return;
   const texelsPerPixel = (holo.renderTexture.width / tile.document.width) / canvas.stage.scale.x;
   for ( const {list, id} of holo.annotationsAlong(from, to, ERASER_RADIUS * texelsPerPixel) ) {
+    const before = holo.annotation(list, id);
     holo.hide(list, id);
-    editAnnotations(tile.document, list, {type: "delete", id});
+    history.edit(tile.document, list, {type: "delete", id}, before);
   }
 }
 
@@ -404,7 +426,7 @@ function finishStroke(tile, holo, stroke) {
   if ( stroke.points.length < 4 ) return;
   stroke.points = simplifyStroke(stroke.points, STROKE_TOLERANCE, MAX_STROKE_POINTS);
   holo.addPending("strokes", stroke);
-  editAnnotations(tile.document, "strokes", {type: "add", item: stroke});
+  history.edit(tile.document, "strokes", {type: "add", item: stroke});
 }
 
 /**
@@ -454,7 +476,7 @@ function finishMeasure(tile, holo, {a, b, second}, moved) {
   if ( Math.hypot(b.u - a.u, b.v - a.v) < 1e-3 ) return;
   const measure = {id: foundry.utils.randomID(), points: [a.u, a.v, b.u, b.v]};
   holo.addPending("measures", measure);
-  editAnnotations(tile.document, "measures", {type: "add", item: measure});
+  history.edit(tile.document, "measures", {type: "add", item: measure});
 }
 
 /** Start moving one end of a measurement. */
@@ -475,8 +497,9 @@ function openMeasure(tile, holo, id) {
   closeCard();
   openMeasureCard(tile, holo, id, {
     remove: () => {
+      const before = holo.annotation("measures", id);
       holo.hide("measures", id);
-      editAnnotations(tile.document, "measures", {type: "delete", id});
+      history.edit(tile.document, "measures", {type: "delete", id}, before);
     },
     // The scale is part of the hologram's settings, so only GMs change it.
     calibrate: game.user.isGM ? (distance, unit) => {
@@ -490,8 +513,9 @@ function openMeasure(tile, holo, id) {
 function openMarkerCard(tile, holo, id) {
   closeMeasureCard();
   openCard(tile, holo, id, {
-    update: changes => editAnnotations(tile.document, "markers", {type: "update", id, changes}),
-    remove: () => editAnnotations(tile.document, "markers", {type: "delete", id}),
+    update: changes => history.edit(tile.document, "markers", {type: "update", id, changes},
+      holo.annotation("markers", id)),
+    remove: () => history.edit(tile.document, "markers", {type: "delete", id}, holo.annotation("markers", id)),
     focus: () => {
       const marker = holo.markers.find(m => m.id === id);
       if ( !marker ) return;

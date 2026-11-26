@@ -1,5 +1,5 @@
 import {LINK_SECTIONS, MODULE_ID, UNITS, defaultCamera, getHoloData} from "./data.mjs";
-import {editAnnotations} from "./annotations.mjs";
+import * as history from "./history.mjs";
 import {createLink, joinLink, leaveLink, linkChoices, writeHolo} from "./links.mjs";
 
 const {HandlebarsApplicationMixin, DocumentSheetV2} = foundry.applications.api;
@@ -195,7 +195,8 @@ export default class HoloConfig extends HandlebarsApplicationMixin(DocumentSheet
       window: {title: "VIRAHOLO.Config.clearMarkers"},
       content: `<p>${game.i18n.localize("VIRAHOLO.Config.clearMarkersConfirm")}</p>`
     });
-    if ( confirmed ) await editAnnotations(this.document, "markers", {type: "clear"});
+    if ( !confirmed ) return;
+    history.edit(this.document, "markers", {type: "clear"}, getHoloData(this.document).annotations.markers);
   }
 
   static async #onClearStrokes() {
@@ -203,7 +204,8 @@ export default class HoloConfig extends HandlebarsApplicationMixin(DocumentSheet
       window: {title: "VIRAHOLO.Config.clearStrokes"},
       content: `<p>${game.i18n.localize("VIRAHOLO.Config.clearStrokesConfirm")}</p>`
     });
-    if ( confirmed ) await editAnnotations(this.document, "strokes", {type: "clear"});
+    if ( !confirmed ) return;
+    history.edit(this.document, "strokes", {type: "clear"}, getHoloData(this.document).annotations.strokes);
   }
 
   static async #onClearMeasures() {
@@ -211,7 +213,8 @@ export default class HoloConfig extends HandlebarsApplicationMixin(DocumentSheet
       window: {title: "VIRAHOLO.Config.clearMeasures"},
       content: `<p>${game.i18n.localize("VIRAHOLO.Config.clearMeasuresConfirm")}</p>`
     });
-    if ( confirmed ) await editAnnotations(this.document, "measures", {type: "clear"});
+    if ( !confirmed ) return;
+    history.edit(this.document, "measures", {type: "clear"}, getHoloData(this.document).annotations.measures);
   }
 
   static async #onResetView() {
