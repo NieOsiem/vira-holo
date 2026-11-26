@@ -7,6 +7,7 @@ const GLYPHS = {
   spin: '<path d="M3.5 12a8.5 8.5 0 0 1 14.4-6.1L21 8"/><path d="M21 3.2V8h-4.8"/>'
     + '<path d="M20.5 12a8.5 8.5 0 0 1-14.4 6.1L3 16"/><path d="M3 20.8V16h4.8"/>',
   waypoint: '<path d="M20 10c0 6-8 12-8 12S4 16 4 10a8 8 0 0 1 16 0z"/><circle cx="12" cy="10" r="2.8"/>',
+  ping: '<circle cx="12" cy="12" r="1.8" fill="currentColor" stroke="none"/><path d="M8.2 8.2a5.4 5.4 0 0 0 0 7.6M15.8 8.2a5.4 5.4 0 0 1 0 7.6M5 5a10 10 0 0 0 0 14M19 5a10 10 0 0 1 0 14"/>',
   draw: '<path d="M17 3a2.8 2.8 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/>',
   erase: '<path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21"/><path d="M22 21H7"/>',
   measure: '<path d="M2 12h20M6 8v8M12 6v12M18 8v8"/>',
@@ -57,7 +58,7 @@ export function showRing(tile, actions) {
   const {mode, map} = getHoloData(tile.document);
   const terrain = mode === "terrain";
   const up = !!map.parent;
-  const names = [...(up ? ["up"] : []), "recenter", "spin", ...(terrain ? ["display"] : []), "waypoint", "draw", "erase", "measure", "undo",
+  const names = [...(up ? ["up"] : []), "recenter", "spin", ...(terrain ? ["display"] : []), "waypoint", "ping", "draw", "erase", "measure", "undo",
     "redo", ...(game.user.isGM ? ["settings"] : [])];
   const buttons = names.map((name, index) => {
     const button = document.createElement("button");

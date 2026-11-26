@@ -12,6 +12,7 @@
       "spin": "Auto-spin on / off",
       "settings": "Hologram settings",
       "waypoint": "Waypoint tool: click the hologram to place a pin",
+      "ping": "Ping tool: click the hologram to flash a marker on that spot for everyone. Hold Ctrl and click to ping with any tool.",
       "draw": "Draw tool: drag across the hologram to ink it",
       "erase": "Eraser: click or drag over drawings and measurements to remove them",
       "measure": "Ruler: click for measuring (drag, or click both ends), again for moving ends, again for off. Click a distance label for options.",

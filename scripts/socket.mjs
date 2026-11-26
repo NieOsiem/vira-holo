@@ -102,6 +102,11 @@ function sanitizePreview(preview) {
       const [u, v] = [unit(preview.u), unit(preview.v)];
       return (isId(id) && (u !== null) && (v !== null)) ? {kind, id, u, v} : null;
     }
+    case "ping": {
+      const [u, v] = [unit(preview.u), unit(preview.v)];
+      const color = /^#[0-9a-f]{6}$/i.test(preview.color) ? preview.color : INKS[0];
+      return ((u !== null) && (v !== null)) ? {kind, u, v, color} : null;
+    }
     case "measurePoints": {
       const points = units(preview.points, 4);
       return (isId(id) && (points?.length === 4)) ? {kind, id, points} : null;

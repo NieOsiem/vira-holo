@@ -1,4 +1,4 @@
-import {DEFAULTS, DISPLAY_MODES, MARKER_GLYPHS, MAX_MEASURES, MAX_STROKES, MAX_STROKE_POINTS, canDrive, contrastingInk,
+import {DEFAULTS, DISPLAY_MODES, INKS, MARKER_GLYPHS, MAX_MEASURES, MAX_STROKES, MAX_STROKE_POINTS, canDrive, contrastingInk,
   defaultCamera, sanitizeScale} from "./data.mjs";
 import * as history from "./history.mjs";
 import HoloConfig from "./holo-config.mjs";
@@ -9,7 +9,7 @@ import {writeHolo} from "./links.mjs";
 import {arrivalCamera, moveMap, updatePortal} from "./maps.mjs";
 import {hideRing, isRingEvent, refreshRing, setGlyphEnabled, setGlyphOn, setStrip, showRing} from "./ring.mjs";
 import {simplifyStroke} from "./stroke-layer.mjs";
-import {getHolograms, showLiveCamera} from "./tile-holo.mjs";
+import {getHolograms, showLiveCamera, showPreview} from "./tile-holo.mjs";
 import {broadcastCamera, broadcastPreview, saveDriverChanges} from "./socket.mjs";
 
 /** Radians of yaw / pitch per screen pixel dragged. */
@@ -19,6 +19,8 @@ const ZOOM_STEP = 1.12;
 /** Milliseconds between live updates (camera, edits in progress) sent to other users: 30 per second. */
 const BROADCAST_INTERVAL = 33;
 const WHEEL_SAVE_DELAY = 400;
+/** Least time between one user's pings. */
+const PING_COOLDOWN = 250;
 /** Entering a map first pans and zooms onto its portal for this long, then switches the map. */
 const ENTER_MS = 550;
 /** Camera distance when the view arrives at the portal, as a fraction of the starting one. */
@@ -44,6 +46,7 @@ const STROKE_TOLERANCE = 0.001;
 let drag = null;
 /** Whether the lead-in to entering a map is running (see zoomOnto). */
 let entering = false;
+let lastPing = 0;
 /**
  * The hologram the user last pressed on. It shows the tool ring, and the wheel zooms it while the pointer is over
  * it. Pressing anywhere else lets it go.
@@ -106,6 +109,7 @@ function setEngaged(hit) {
     spin: () => toggleSpin(tile, holo),
     display: () => cycleDisplay(tile, holo),
     waypoint: () => toggleTool("waypoint", holo),
+    ping: () => toggleTool("ping", holo),
     draw: () => toggleTool("draw", holo),
     erase: () => toggleTool("erase", holo),
     // The ruler has two modes: off → making measurements → moving their ends → off.
@@ -133,7 +137,7 @@ function toggleTool(name, holo) {
 function setTool(name, holo) {
   cancelMeasure();
   tool = name;
-  for ( const glyph of ["waypoint", "draw", "erase"] ) setGlyphOn(glyph, tool === glyph);
+  for ( const glyph of ["waypoint", "ping", "draw", "erase"] ) setGlyphOn(glyph, tool === glyph);
   setGlyphOn("measure", ["measure", "adjust"].includes(tool), (tool === "adjust") ? 2 : 1);
   if ( !["waypoint", "draw"].includes(tool) ) return setStrip(null);
   setStrip({
@@ -256,6 +260,8 @@ function onPointerDown(event) {
   canvas.app.view.setPointerCapture(event.pointerId);
   if ( document.activeElement instanceof HTMLElement ) document.activeElement.blur();
   const {tile, holo} = hit;
+  // A ping is a press: with the ping tool, or with Ctrl held whichever tool is on (Shift still pans).
+  if ( event.ctrlKey || event.metaKey || ((tool === "ping") && !event.shiftKey) ) return ping(tile, holo, event);
   holo.dragging = true;
   // With a tool on, a drag is the tool's: it never orbits (Shift+drag still pans). The pen and the eraser ignore pins.
   let pen = (tool === "draw") && !event.shiftKey;
@@ -457,6 +463,18 @@ async function zoomOnto(tile, holo, {u, v}) {
     entering = false;
     holo.dragging = false;
   }
+}
+
+/** Flash a cue on the spot under the pointer, for everyone looking at this map. Nothing is saved. */
+function ping(tile, holo, event) {
+  const now = performance.now();
+  if ( now - lastPing < PING_COOLDOWN ) return;
+  const position = holo.surfaceAt(holo.toTexturePoint(canvasPoint(event)));
+  if ( !position ) return;
+  lastPing = now;
+  const preview = {kind: "ping", ...position, color: game.user.color?.css ?? INKS[0]};
+  showPreview(tile.document, game.user.id, preview);
+  broadcastPreview(tile.document, preview);
 }
 
 /** Drop a new waypoint where the click meets the hologram's surface, and open its card. */
@@ -671,9 +689,11 @@ function panCamera(tile, holo, start, dx, dy) {
   return {x: Math.clamp(start.x - x, -1, 1), z: Math.clamp(start.z - z, -1, 1)};
 }
 
-/** Go back to the mode's starting view. */
+/** Go back to the mode's starting view: north (the top of the image) at the top, then spinning on if it was. */
 function recenter(tile, holo) {
-  const camera = {...defaultCamera(holo.data.mode), spin: holo.camera.spin};
+  const {spin} = holo.camera;
+  const camera = {...defaultCamera(holo.data.mode), spin};
+  camera.yaw -= holo.spinPhase(spin); // Auto-spin adds to the yaw, so offset it to start from the default yaw
   showLiveCamera(tile.document, camera);
   broadcastCamera(tile.document, camera);
   saveDriverChanges(tile.document, {camera});

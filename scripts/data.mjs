@@ -23,7 +23,7 @@ export const DEFAULTS = Object.freeze({
    * Orbit camera. x/z is the point on the floor it looks at, in footprint units (-1..1); spin is auto-rotation in
    * radians per second, added to yaw from the shared server clock.
    */
-  camera: {yaw: 0.6, pitch: 0.95, dist: 4.8, x: 0, z: 0, spin: 0.08},
+  camera: {yaw: 0, pitch: 0.95, dist: 4.8, x: 0, z: 0, spin: 0.08},
   // camera.map (the UUID of the map travelled to, see getMaps) is left out on purpose: resetting or recentring the
   // camera must not take the hologram home.
   look: {

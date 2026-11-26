@@ -56,6 +56,9 @@ const WIRE_DEPTH_BIAS = 0.0006;
 const STROKE_DEPTH_BIAS = 0.003;
 /** How long the hologram takes to settle after travelling to another map. */
 const TRAVEL_MS = 700;
+/** How long a ping lasts, and how many may show at once. */
+const PING_MS = 1500;
+const MAX_PINGS = 12;
 /** How long the view takes to pan from the spot a map was left at to the centre of its parent (tiles that recentre). */
 const RECENTER_MS = 1100;
 /** Content scale a travel starts from: a map entered grows into view, a parent shrinks into it. */
@@ -212,10 +215,10 @@ float line(float r, float at) {
 
 // A "^" between the two circles at the top of the image (+y in the disc's UV), which is north.
 float north(vec2 uv) {
-  vec2 p = uv - vec2(0.0, 0.9625);
-  float s = 0.035 / 0.04;
-  float d = abs(p.y - (0.0175 - abs(p.x) * s)) / sqrt(1.0 + s * s);
-  return step(abs(p.x), 0.04) * (1.0 - smoothstep(0.0, 1.8 * fwidth(d), d));
+  vec2 p = uv - vec2(0.0, 0.9575);
+  float s = 0.0245 / 0.028;
+  float d = abs(p.y - (0.01225 - abs(p.x) * s)) / sqrt(1.0 + s * s);
+  return step(abs(p.x), 0.028) * (1.0 - smoothstep(0.0, 1.8 * fwidth(d), d));
 }
 
 void main() {
@@ -645,6 +648,7 @@ export default class HoloRenderer {
     this.moteMesh = new PIXI.Mesh(this.moteGeometry, this.moteShader, this.state, PIXI.DRAW_MODES.POINTS);
     this.stage = new PIXI.Container();
     this.markerLayer = new MarkerLayer();
+    this.pingGraphics = new PIXI.Graphics();
     const strokeUniforms = {uCamera: this.cameraUniform, uTarget: this.targetUniform, uCenter: this.centerUniform,
       uVolume: this.volumeUniform, uFrag: this.fragUniform};
     this.strokeLayer = new StrokeLayer(stroke, strokeUniforms, this.state);
@@ -710,13 +714,15 @@ export default class HoloRenderer {
   #travel = null;
   /** Going up with `recenterUp`: the spot (u, v) the old map was at, which the view eases from. */
   #recenter = null;
+  /** @type {{u: number, v: number, color: number, start: number}[]} Pings on show. */
+  #pings = [];
   /** Content opacity factor during a travel transition. */
   #fade = 1;
 
   /** Strokes, measurements and waypoints go on top of the content, waypoints last. */
   #addOverlays() {
     this.stage.addChild(this.moteMesh, this.strokeLayer.container, this.liveStrokeLayer.container, this.measureLines.container,
-      this.liveMeasureLines.container, this.measureLabels.container, this.markerLayer.container);
+      this.liveMeasureLines.container, this.measureLabels.container, this.markerLayer.container, this.pingGraphics);
   }
 
   #lookUniforms(extra={}) {
@@ -985,6 +991,7 @@ export default class HoloRenderer {
     this.#updateMotes(showTerrain, seconds);
     this.#layoutLines(showTerrain);
     this.#layoutMarkers(pitch);
+    this.#drawPings();
   }
 
   #updateMotes(showTerrain, seconds) {
@@ -1323,6 +1330,11 @@ export default class HoloRenderer {
         this.#liveStrokeVersion++;
         if ( preview.stroke ) this.addPending("strokes", preview.stroke);
         break;
+      case "ping":
+        this.#pings.push({u: preview.u, v: preview.v, color: new PIXI.Color(preview.color).toNumber(),
+          start: performance.now()});
+        this.#pings.splice(0, this.#pings.length - MAX_PINGS);
+        break;
       case "measure":
         this.#remoteMeasures.set(userId, {points: preview.points, until});
         this.#liveMeasureVersion++;
@@ -1585,6 +1597,63 @@ export default class HoloRenderer {
     const d = rect ? Math.max(qx, qy) : Math.hypot(qx, qy);
     const t = Math.clamp((d - 0.88) / 0.12, 0, 1);
     return 1 - (t * t * (3 - (2 * t)));
+  }
+
+  /**
+   * Draw the pings: rings spreading across the surface from the spot, and a pointer dropping onto it. Everything
+   * follows the surface (and the camera) as it turns, so the cue stays on the place pointed at.
+   */
+  #drawPings() {
+    const g = this.pingGraphics;
+    g.clear();
+    const now = performance.now();
+    this.#pings = this.#pings.filter(ping => now - ping.start < PING_MS);
+    if ( !this.#pings.length ) return;
+    const project = this.#projector();
+    const base = this.#opacity * this.#flicker;
+    const reach = Math.min(this.#hx, this.#hz) * 0.4;
+    const width = Math.max(2, Math.min(this.width, this.height) / 300);
+    for ( const {u, v, color, start} of this.#pings ) {
+      const t = (now - start) / PING_MS;
+      const centre = this.#surfacePosition(u, v);
+      const middle = project(centre);
+      if ( !middle ) continue;
+      const fade = base * this.#volumeAlpha(middle) * depthFade(middle.depth) * Math.min(1, (1 - t) * 3);
+      for ( let i = 0; i < 3; i++ ) {
+        const p = Math.clamp((t - (i * 0.14)) / 0.6, 0, 1);
+        if ( (p <= 0) || (p >= 1) ) continue;
+        const radius = reach * (1 - ((1 - p) ** 3));
+        g.lineStyle({width: width * (1.6 - p), color, alpha: fade * Math.min(1, (1 - p) * 1.6)});
+        let first = true;
+        for ( let k = 0; k <= 40; k++ ) {
+          const angle = (k / 40) * TAU;
+          const x = centre.x + (Math.cos(angle) * radius);
+          const z = centre.z + (Math.sin(angle) * radius);
+          const edge = this.#surfacePosition(Math.clamp((x / this.#hx + 1) / 2, 0, 1), Math.clamp((1 - (z / this.#hz)) / 2, 0, 1));
+          const point = project({x, y: edge.y, z});
+          if ( !point ) continue;
+          if ( first ) g.moveTo(point.x, point.y);
+          else g.lineTo(point.x, point.y);
+          first = false;
+        }
+      }
+      // The pointer falls onto the spot, settles with a small bounce, and fades with the rings.
+      const drop = Math.clamp(t / 0.3, 0, 1);
+      const height = STEM_HEIGHT * (0.3 + (2.2 * ((1 - drop) ** 2)) + (0.15 * Math.sin(drop * Math.PI)));
+      const tip = middle;
+      const top = project({...centre, y: centre.y + height});
+      if ( !top ) continue;
+      const size = Math.clamp(Math.min(this.width, this.height) * 0.02, 6, 22);
+      g.lineStyle({width: width, color, alpha: fade * 0.7});
+      g.moveTo(tip.x, tip.y).lineTo(top.x, top.y);
+      g.lineStyle(0).beginFill(color, fade * 0.25 * (1 - t));
+      g.drawCircle(tip.x, tip.y, size * (0.8 + t));
+      g.endFill();
+      g.beginFill(color, fade);
+      g.moveTo(top.x - size, top.y - (size * 1.5)).lineTo(top.x + size, top.y - (size * 1.5)).lineTo(top.x, top.y).closePath();
+      g.drawCircle(tip.x, tip.y, width * 1.6);
+      g.endFill();
+    }
   }
 
   #layoutMarkers(pitch) {
