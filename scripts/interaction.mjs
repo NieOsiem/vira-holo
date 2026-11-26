@@ -17,6 +17,8 @@ const WHEEL_SAVE_DELAY = 400;
 const DOUBLE_CLICK_MS = 350;
 /** Movement (screen pixels) under which a press counts as a click rather than a drag. */
 const CLICK_SLOP = 4;
+/** Reach of the eraser around the pointer, in screen pixels (on top of the stroke's own width). */
+const ERASER_RADIUS = 8;
 /** Screen pixels the pointer moves before a stroke gets its next point. */
 const STROKE_SPACING = 3;
 /** How far (in image UV) a point may stray from a straight run before it's kept when a stroke is simplified. */
@@ -24,7 +26,8 @@ const STROKE_TOLERANCE = 0.001;
 
 /**
  * @type {{tile: Tile, holo: HoloRenderer, pointerId: number, pan: boolean, pressed: string|null,
- *         marker: string|null, stroke: object|null, x: number, y: number, last: {x: number, y: number},
+ *         marker: string|null, toolOn: boolean, pen: boolean, stroke: object|null,
+ *         erasing: {x: number, y: number}|null, x: number, y: number, last: {x: number, y: number},
  *         start: object, camera: object, position: object|null, moved: boolean, lastSent: number}|null}
  */
 let drag = null;
@@ -34,7 +37,8 @@ let drag = null;
  */
 let engaged = null;
 /**
- * The engaged hologram's active tool: "waypoint" (a click places a pin), "draw" (a drag inks the surface) or null.
+ * The engaged hologram's active tool: "waypoint" (a click places a pin), "draw" (a drag inks the surface),
+ * "erase" (a click or drag removes the strokes under it) or null.
  * @type {string|null}
  */
 let tool = null;
@@ -76,6 +80,7 @@ function setEngaged(hit) {
     spin: () => toggleSpin(tile, holo),
     waypoint: () => toggleTool("waypoint", holo),
     draw: () => toggleTool("draw", holo),
+    erase: () => toggleTool("erase", holo),
     settings: () => HoloConfig.open(tile.document)
   });
 }
@@ -85,7 +90,8 @@ function toggleTool(name, holo) {
   tool = (tool === name) ? null : name;
   setGlyphOn("waypoint", tool === "waypoint");
   setGlyphOn("draw", tool === "draw");
-  if ( !tool ) return setStrip(null);
+  setGlyphOn("erase", tool === "erase");
+  if ( !tool || (tool === "erase") ) return setStrip(null);
   setStrip({
     glyph: tool,
     ink: currentInk(holo),
@@ -168,10 +174,17 @@ function onPointerDown(event) {
   if ( document.activeElement instanceof HTMLElement ) document.activeElement.blur();
   const {tile, holo} = hit;
   holo.dragging = true;
-  // With the pen, a press on the surface starts a stroke (pins underneath are drawn over, not picked).
-  const stroke = ((tool === "draw") && !event.shiftKey) ? startStroke(holo, canvasPoint(event)) : null;
+  // With a tool on, a drag is the tool's: it never orbits (Shift+drag still pans). The pen and the eraser ignore pins.
+  let pen = (tool === "draw") && !event.shiftKey;
+  if ( pen && (holo.data.annotations.strokes.length >= MAX_STROKES) ) {
+    ui.notifications.warn(game.i18n.format("VIRAHOLO.StrokeLimit", {max: MAX_STROKES}));
+    pen = false;
+  }
+  const texturePoint = holo.toTexturePoint(canvasPoint(event));
+  const erasing = ((tool === "erase") && !event.shiftKey) ? texturePoint : null;
+  if ( erasing ) eraseAlong(tile, holo, erasing, erasing);
   // A pressed pin opens its card on click; it's only dragged when unlocked (a locked pin lets the drag orbit).
-  const pressed = stroke ? null : holo.markerAt(holo.toTexturePoint(canvasPoint(event)));
+  const pressed = ["draw", "erase"].includes(tool) ? null : holo.markerAt(texturePoint);
   const locked = !!holo.markers.find(m => m.id === pressed)?.locked;
   drag = {
     tile, holo,
@@ -179,7 +192,10 @@ function onPointerDown(event) {
     pan: event.shiftKey,
     pressed,
     marker: locked ? null : pressed,
-    stroke,
+    toolOn: !!tool,
+    pen,
+    stroke: pen ? startStroke(holo, canvasPoint(event)) : null,
+    erasing,
     x: event.clientX,
     y: event.clientY,
     last: {x: event.clientX, y: event.clientY},
@@ -194,7 +210,13 @@ function onPointerDown(event) {
 function onPointerMove(event) {
   if ( !drag || (event.pointerId !== drag.pointerId) ) return;
   swallow(event);
-  if ( drag.stroke ) return extendStroke(event);
+  if ( drag.pen ) return extendStroke(event);
+  if ( drag.erasing ) {
+    const point = drag.holo.toTexturePoint(canvasPoint(event));
+    eraseAlong(drag.tile, drag.holo, drag.erasing, point);
+    drag.erasing = point;
+    return;
+  }
   const dx = event.clientX - drag.x;
   const dy = event.clientY - drag.y;
   if ( !drag.moved && (Math.hypot(dx, dy) < CLICK_SLOP) ) return;
@@ -210,6 +232,7 @@ function onPointerMove(event) {
     }
     return;
   }
+  if ( drag.toolOn && !drag.pan ) return;
 
   if ( drag.pan ) Object.assign(camera, panCamera(drag.tile, holo, start, dx, dy));
   else {
@@ -227,26 +250,29 @@ function onPointerMove(event) {
 function onPointerUp(event) {
   if ( !drag || (event.pointerId !== drag.pointerId) ) return;
   swallow(event);
-  const {tile, holo, camera, moved, pressed, marker, position, stroke} = drag;
+  const {tile, holo, camera, moved, pressed, marker, position, pan, toolOn, pen, stroke, erasing} = drag;
   drag = null;
   holo.dragging = false;
   if ( stroke ) holo.setLiveStroke(null);
   if ( tile.destroyed ) return; // Deleted, or the scene changed, mid-drag
 
   if ( stroke ) return finishStroke(tile, holo, stroke);
+  if ( pen || erasing ) return;
   if ( pressed && !moved ) return openMarkerCard(tile, holo, pressed);
   if ( marker ) {
     if ( position ) editAnnotations(tile.document, "markers", {type: "update", id: marker, changes: position});
     return;
   }
   if ( moved ) {
+    if ( toolOn && !pan ) return; // The camera didn't move
     broadcastCamera(tile.document, camera);
     saveDriverChanges(tile.document, {camera});
     return;
   }
 
-  // A click on the hologram itself.
+  // A click on the hologram itself; with a tool on it never toggles auto-spin.
   if ( tool === "waypoint" ) return placeMarker(tile, holo, canvasPoint(event));
+  if ( toolOn ) return;
   closeCard();
   const now = performance.now();
   if ( (lastClick.tile === tile) && (now - lastClick.time < DOUBLE_CLICK_MS) ) {
@@ -266,24 +292,28 @@ function placeMarker(tile, holo, point) {
 }
 
 /**
- * Begin a stroke where a press meets the surface.
- * @returns {object|null}   Null off the surface (the press orbits instead) or when the hologram is full
+ * Begin a stroke where the pointer meets the surface.
+ * @returns {object|null}   Null off the surface
  */
 function startStroke(holo, point) {
   const position = holo.surfaceAt(holo.toTexturePoint(point));
   if ( !position ) return null;
-  if ( holo.data.annotations.strokes.length >= MAX_STROKES ) {
-    ui.notifications.warn(game.i18n.format("VIRAHOLO.StrokeLimit", {max: MAX_STROKES}));
-    return null;
-  }
   const stroke = {id: foundry.utils.randomID(), color: currentInk(holo), width: strokeWidth, points: [position.u, position.v]};
   holo.setLiveStroke(stroke);
   return stroke;
 }
 
-/** Add the pointer's surface point to the stroke being drawn, every few screen pixels. */
+/**
+ * Add the pointer's surface point to the stroke being drawn, every few screen pixels. A drag that began off the
+ * surface starts its stroke once the pointer reaches it.
+ */
 function extendStroke(event) {
   const {holo, stroke, last} = drag;
+  if ( !stroke ) {
+    drag.stroke = startStroke(holo, canvasPoint(event));
+    drag.last = {x: event.clientX, y: event.clientY};
+    return;
+  }
   if ( Math.hypot(event.clientX - last.x, event.clientY - last.y) < STROKE_SPACING ) return;
   if ( stroke.points.length >= MAX_STROKE_POINTS * 20 ) return; // Raw points; far fewer survive simplifying
   // Off the surface (past its edge) the stroke waits for the pointer to come back.
@@ -292,6 +322,19 @@ function extendStroke(event) {
   drag.last = {x: event.clientX, y: event.clientY};
   stroke.points.push(position.u, position.v);
   holo.setLiveStroke(stroke);
+}
+
+/**
+ * Remove every stroke the eraser passes over between two render-texture points. They vanish here at once; the
+ * deletion is saved through the GM.
+ */
+function eraseAlong(tile, holo, from, to) {
+  if ( tile.destroyed ) return;
+  const texelsPerPixel = (holo.renderTexture.width / tile.document.width) / canvas.stage.scale.x;
+  for ( const id of holo.strokesAlong(from, to, ERASER_RADIUS * texelsPerPixel) ) {
+    holo.hideStroke(id);
+    editAnnotations(tile.document, "strokes", {type: "delete", id});
+  }
 }
 
 /** Save a finished stroke, simplified, and keep showing it until the save comes back. A plain click draws nothing. */

@@ -350,6 +350,23 @@ function depthFade(depth, far=0.6) {
   return 1 + ((far - 1) * Math.clamp((depth + 1) * 0.5, 0, 1));
 }
 
+/** Distance between two 2D segments (0 where they cross). */
+function segmentDistance(a, b, c, d) {
+  const cross = (o, p, q) => ((p.x - o.x) * (q.y - o.y)) - ((p.y - o.y) * (q.x - o.x));
+  const straddles = (s, t) => ((s > 0) && (t < 0)) || ((s < 0) && (t > 0));
+  if ( straddles(cross(c, d, a), cross(c, d, b)) && straddles(cross(a, b, c), cross(a, b, d)) ) return 0;
+  return Math.min(pointSegmentDistance(a, c, d), pointSegmentDistance(b, c, d),
+    pointSegmentDistance(c, a, b), pointSegmentDistance(d, a, b));
+}
+
+function pointSegmentDistance(p, a, b) {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const length2 = (dx * dx) + (dy * dy);
+  const t = length2 ? Math.clamp((((p.x - a.x) * dx) + ((p.y - a.y) * dy)) / length2, 0, 1) : 0;
+  return Math.hypot(p.x - (a.x + (t * dx)), p.y - (a.y + (t * dy)));
+}
+
 /**
  * Read a heightmap's red channel into a small CPU grid. The texture's own image is drawn onto a canvas, so no GPU
  * readback is needed.
@@ -445,6 +462,10 @@ export default class HoloRenderer {
   #liveStrokeVersion = 0;
   /** @type {Map<string, {stroke: object, until: number}>} Strokes sent to the GM, shown until their save arrives. */
   #pendingStrokes = new Map();
+  /** @type {Map<string, number>} Strokes erased on this client, hidden until their deletion is saved (or times out). */
+  #erasedStrokes = new Map();
+  /** Half width of a medium stroke, in render-texture pixels. */
+  #strokeHalfWidth = 1;
 
   /** Strokes and waypoints go on top of the content, waypoints last. */
   #addOverlays() {
@@ -751,6 +772,38 @@ export default class HoloRenderer {
     this.#pendingStrokes.set(stroke.id, {stroke, until: performance.now() + PENDING_STROKE_MS});
   }
 
+  /** Hide a stroke right away while its deletion is on the way to the GM. */
+  hideStroke(id) {
+    this.#erasedStrokes.set(id, performance.now() + PENDING_STROKE_MS);
+  }
+
+  /**
+   * Shown strokes passing within `radius` of the segment a→b (render-texture pixels), e.g. an eraser's sweep.
+   * @param {{x: number, y: number}} a
+   * @param {{x: number, y: number}} b
+   * @param {number} radius
+   * @returns {string[]}   Stroke IDs
+   */
+  strokesAlong(a, b, radius) {
+    const project = this.#projector();
+    const found = [];
+    for ( const {id, width, positions} of this.strokeLayer.lines ) {
+      if ( this.#erasedStrokes.has(id) ) continue;
+      const reach = radius + (this.#strokeHalfWidth * width);
+      let previous = null;
+      for ( const position of positions ) {
+        const point = project(position);
+        if ( point && previous && (this.#volumeAlpha(point) > 0.05)
+          && (segmentDistance(a, b, previous, point) <= reach) ) {
+          found.push(id);
+          break;
+        }
+        previous = point;
+      }
+    }
+    return found;
+  }
+
   /** Saved strokes plus this client's pending ones, rebuilt into meshes only when they or the surface change. */
   #layoutStrokes(showTerrain) {
     const {look, terrain, annotations: {strokes: saved}} = this.data;
@@ -759,7 +812,11 @@ export default class HoloRenderer {
     for ( const [id, {until}] of this.#pendingStrokes ) {
       if ( ids.has(id) || (now > until) ) this.#pendingStrokes.delete(id);
     }
-    const strokes = [...saved, ...Array.from(this.#pendingStrokes.values(), p => p.stroke)];
+    for ( const [id, until] of this.#erasedStrokes ) {
+      if ( (!ids.has(id) && !this.#pendingStrokes.has(id)) || (now > until) ) this.#erasedStrokes.delete(id);
+    }
+    const strokes = [...saved, ...Array.from(this.#pendingStrokes.values(), p => p.stroke)]
+      .filter(s => !this.#erasedStrokes.has(s.id));
     // On terrain, segments are split per grid cell so lines follow the relief.
     const onTerrain = showTerrain && !!this.#heights;
     const step = onTerrain ? 1 / (Math.clamp(Math.round(terrain.resolution), 16, 256) - 1) : 0;
@@ -769,7 +826,8 @@ export default class HoloRenderer {
     const live = this.#liveStroke ? [this.#liveStroke] : [];
     this.liveStrokeLayer.sync(live, `${shape}|${this.#liveStrokeVersion}`, surface, step);
     const rt = this.renderTexture;
-    const style = {opacity: look.opacity, flicker: this.#flicker, width: Math.clamp(Math.min(rt.width, rt.height) * 0.0022, 1, 5)};
+    this.#strokeHalfWidth = Math.clamp(Math.min(rt.width, rt.height) * 0.0022, 1, 5);
+    const style = {opacity: look.opacity, flicker: this.#flicker, width: this.#strokeHalfWidth};
     this.strokeLayer.update(style);
     this.liveStrokeLayer.update(style);
   }
@@ -789,24 +847,31 @@ export default class HoloRenderer {
    * Project an object-space point into render-texture pixels with the camera as last drawn (same maths as PROJECT).
    * @returns {{x: number, y: number, depth: number}|null}   Null behind the camera
    */
-  #project({x: px, y: py, z: pz}) {
+  #project(point) {
+    return this.#projector()(point);
+  }
+
+  /** #project with the camera's trigonometry worked out once, for projecting many points. */
+  #projector() {
     const [yaw, pitch, dist, ppu] = this.cameraUniform;
     const [tx, tz] = this.targetUniform;
     const [cx, cy] = this.centerUniform;
-    px -= tx;
-    pz -= tz;
     const cosY = Math.cos(yaw);
     const sinY = Math.sin(yaw);
     const cosP = Math.cos(pitch);
     const sinP = Math.sin(pitch);
-    const x = (px * cosY) + (pz * sinY);
-    const z1 = (pz * cosY) - (px * sinY);
-    const y = (py * cosP) + (z1 * sinP);
-    const z = (z1 * cosP) - (py * sinP);
-    const w = z + dist;
-    if ( w <= 0.05 ) return null;
-    const s = (FOCAL * ppu) / w;
-    return {x: cx + (x * s), y: cy - (y * s), depth: z};
+    return ({x: px, y: py, z: pz}) => {
+      px -= tx;
+      pz -= tz;
+      const x = (px * cosY) + (pz * sinY);
+      const z1 = (pz * cosY) - (px * sinY);
+      const y = (py * cosP) + (z1 * sinP);
+      const z = (z1 * cosP) - (py * sinP);
+      const w = z + dist;
+      if ( w <= 0.05 ) return null;
+      const s = (FOCAL * ppu) / w;
+      return {x: cx + (x * s), y: cy - (y * s), depth: z};
+    };
   }
 
   /** How visible a render-texture point is inside the projection area (matches the shaders' volumeFade). */

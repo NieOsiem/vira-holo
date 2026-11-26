@@ -15,6 +15,8 @@ const MAX_SUBDIVISIONS = 64;
 export default class StrokeLayer {
   container = new PIXI.Container();
   #key = null;
+  /** @type {{id: string, width: number, positions: {x: number, y: number, z: number}[]}[]} As last built, for picking. */
+  lines = [];
 
   /**
    * @param {PIXI.Program} program
@@ -50,11 +52,17 @@ export default class StrokeLayer {
   sync(strokes, key, surface, step) {
     if ( key === this.#key ) return;
     this.#key = key;
-    const lines = strokes.filter(stroke => stroke.points.length >= 4).map(({points, color, width}) => ({
+    const lines = strokes.filter(stroke => stroke.points.length >= 4).map(({id, points, color, width}) => ({
+      id,
       points: resample(points, step),
       color: new PIXI.Color(color).toRgbArray(),
       width: STROKE_WIDTHS[width] ?? 1
     }));
+    for ( const line of lines ) {
+      line.positions = [];
+      for ( let i = 0; i < line.points.length; i += 2 ) line.positions.push(surface(line.points[i], line.points[i + 1]));
+    }
+    this.lines = lines.map(({id, width, positions}) => ({id, width, positions}));
     const vertexCount = lines.reduce((n, line) => n + line.points.length, 0); // Two vertices per (u, v) pair
     this.container.visible = vertexCount > 0;
     if ( !vertexCount ) return;
@@ -62,10 +70,8 @@ export default class StrokeLayer {
     const indices = new Uint32Array(lines.reduce((n, line) => n + (((line.points.length / 2) - 1) * 6), 0));
     let vertex = 0;
     let index = 0;
-    for ( const {points, color, width} of lines ) {
-      const count = points.length / 2;
-      const positions = [];
-      for ( let i = 0; i < count; i++ ) positions.push(surface(points[i * 2], points[(i * 2) + 1]));
+    for ( const {positions, color, width} of lines ) {
+      const count = positions.length;
       const first = vertex;
       for ( let i = 0; i < count; i++ ) {
         const here = positions[i];

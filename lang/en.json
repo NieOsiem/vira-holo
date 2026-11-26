@@ -13,6 +13,7 @@
       "settings": "Hologram settings",
       "waypoint": "Waypoint tool: click the hologram to place a pin",
       "draw": "Draw tool: drag across the hologram to ink it",
+      "erase": "Eraser: click or drag over drawings to remove them",
       "ink": "Ink",
       "customInk": "Custom ink",
       "width": {
@@ -82,7 +83,7 @@
       "strokeCount": "Drawings",
       "clearStrokes": "Clear all drawings",
       "clearStrokesConfirm": "Remove every drawing from this hologram?",
-      "strokesHint": "Draw with the pen glyph on the hologram's tool ring; pick the ink and width below it.",
+      "strokesHint": "Draw with the pen glyph on the hologram's tool ring (pick the ink and width below it); remove drawings with the eraser glyph.",
       "camera": {
         "spin": "Auto-spin speed"
       }
