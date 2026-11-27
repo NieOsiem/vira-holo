@@ -689,7 +689,7 @@ void main() {
   float along = smoothstep(0.0, 0.15, t) * (1.0 - smoothstep(0.75, 1.0, t));
   float twinkle = 0.55 + 0.45 * sin((uPhase * 7.0 + k) * 6.2831853);
   float pulse = exp(-pow((t - fract(uPhase * 4.0 + k)) * 10.0, 2.0));
-  float strength = mix(0.32 + 0.4 * pulse, 0.11 + 0.06 * pulse, broad);
+  float strength = mix(0.16 + 0.22 * pulse, 0.14 + 0.05 * pulse, broad);
   float a = strength * across * across * along * twinkle * shown * uOpacity * uFlicker * volumeFade();
   fragColor = vec4(uColor * a, 0.0);
 }`;
@@ -1508,9 +1508,9 @@ export default class HoloRenderer {
         const v = box[1] + (random(seed + 0.2) * (box[3] - box[1]));
         const to = this.#surfacePosition(u, v);
         const from = {x: ((u * 2) - 1) * sign.lensHalf * 0.85, y: sign.base.height + 0.002, z: sign.lensZ};
-        const broad = (k % 3) === 0;
-        const near = broad ? 0.004 : 0.0015;
-        const far = broad ? 0.03 + (random(seed + 0.3) * 0.05) : 0.003 + (random(seed + 0.3) * 0.008);
+        const broad = (k % 2) === 0;
+        const near = broad ? 0.006 : 0.0015;
+        const far = broad ? 0.05 + (random(seed + 0.3) * 0.07) : 0.003 + (random(seed + 0.3) * 0.008);
         const n = positions.length / 3;
         positions.push(from.x - near, from.y, from.z, from.x + near, from.y, from.z, to.x + far, to.y, to.z, to.x - far, to.y, to.z);
         const own = random(seed + 0.4) + (broad ? 1 : 0);
