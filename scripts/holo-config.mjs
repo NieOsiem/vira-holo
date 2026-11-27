@@ -55,6 +55,7 @@ export default class HoloConfig extends HandlebarsApplicationMixin(DocumentSheet
       clearMarkers: HoloConfig.#onClearMarkers,
       clearStrokes: HoloConfig.#onClearStrokes,
       clearMeasures: HoloConfig.#onClearMeasures,
+      clearAreas: HoloConfig.#onClearAreas,
       createLink: HoloConfig.#onCreateLink,
       joinLink: HoloConfig.#onJoinLink,
       leaveLink: HoloConfig.#onLeaveLink,
@@ -163,6 +164,7 @@ export default class HoloConfig extends HandlebarsApplicationMixin(DocumentSheet
       markerCount: holo.annotations.markers.length,
       strokeCount: holo.annotations.strokes.length,
       measureCount: holo.annotations.measures.length,
+      areaCount: holo.annotations.areas.length,
       units: Object.fromEntries(Object.keys(UNITS).map(u => [u, localize(`VIRAHOLO.Units.${u}`)])),
       axes: {width: localize("VIRAHOLO.Config.scale.width"), height: localize("VIRAHOLO.Config.scale.height")},
       players: game.users.filter(u => !u.isGM).map(u => ({id: u.id, name: u.name, owner: holo.owners.includes(u.id)}))
@@ -297,6 +299,15 @@ export default class HoloConfig extends HandlebarsApplicationMixin(DocumentSheet
     });
     if ( !confirmed ) return;
     history.edit(this.document, "measures", {type: "clear"}, getHoloData(this.document).annotations.measures);
+  }
+
+  static async #onClearAreas() {
+    const confirmed = await foundry.applications.api.DialogV2.confirm({
+      window: {title: "VIRAHOLO.Config.clearAreas"},
+      content: `<p>${game.i18n.localize("VIRAHOLO.Config.clearAreasConfirm")}</p>`
+    });
+    if ( !confirmed ) return;
+    history.edit(this.document, "areas", {type: "clear"}, getHoloData(this.document).annotations.areas);
   }
 
   /** Pick an image and put a line showing it at the text cursor (on a line of its own). */

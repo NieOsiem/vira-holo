@@ -11,6 +11,7 @@ const GLYPHS = {
   draw: '<path d="M17 3a2.8 2.8 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/>',
   erase: '<path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21"/><path d="M22 21H7"/>',
   measure: '<path d="M2 12h20M6 8v8M12 6v12M18 8v8"/>',
+  area: '<path d="M4 7.5 11 3l9 5-1.5 10L8 21l-5-6z" fill="currentColor" fill-opacity="0.25"/>',
   undo: '<path d="M3 7v6h6"/><path d="M21 17a9 9 0 0 0-15-6.7L3 13"/>',
   redo: '<path d="M21 7v6h-6"/><path d="M3 17a9 9 0 0 1 15-6.7L21 13"/>',
   power: '<path d="M12 3v8.5"/><path d="M7 6.2a8 8 0 1 0 10 0"/>',
@@ -59,7 +60,7 @@ export function showRing(tile, actions) {
   const {mode, map} = getHoloData(tile.document);
   const terrain = mode === "terrain";
   const up = !!map.parent;
-  const names = [...(up ? ["up"] : []), "recenter", "spin", ...(terrain ? ["display"] : []), "waypoint", "ping", "draw", "erase", "measure", "undo",
+  const names = [...(up ? ["up"] : []), "recenter", "spin", ...(terrain ? ["display"] : []), "waypoint", "ping", "draw", "erase", "measure", "area", "undo",
     "redo", "power", ...(game.user.isGM ? ["settings"] : [])];
   const buttons = names.map((name, index) => {
     const button = document.createElement("button");

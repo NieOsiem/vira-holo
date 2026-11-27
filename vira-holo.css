@@ -393,11 +393,13 @@
   to { opacity: 1; transform: translateX(-50%); }
 }
 
-/* ---- Measurement card: length, delete, and (GM) set the scale from this line ---- */
-.vira-holo-measure-card {
+/* ---- Measurement card: length, delete, and (GM) set the scale from this line; area card: name, ink, size ---- */
+.vira-holo-measure-card,
+.vira-holo-area-card {
   width: 230px;
 }
-.vira-holo-measure-card .distance {
+.vira-holo-measure-card .distance,
+.vira-holo-area-card .distance {
   position: relative;
   margin-bottom: 8px;
   color: #ffe9b0;

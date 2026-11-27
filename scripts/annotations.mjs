@@ -1,4 +1,5 @@
-import {MAX_MARKERS, MAX_MEASURES, MAX_STROKES, getHoloData, sanitizeMarker, sanitizeMeasure, sanitizeStroke} from "./data.mjs";
+import {MAX_AREAS, MAX_MARKERS, MAX_MEASURES, MAX_STROKES, getHoloData, sanitizeArea, sanitizeMarker, sanitizeMeasure,
+  sanitizeStroke} from "./data.mjs";
 import {storageOf, writeHolo} from "./links.mjs";
 import {requestAnnotationEdit} from "./socket.mjs";
 
@@ -6,7 +7,8 @@ import {requestAnnotationEdit} from "./socket.mjs";
 const LISTS = {
   markers: {max: MAX_MARKERS, sanitize: sanitizeMarker},
   strokes: {max: MAX_STROKES, sanitize: sanitizeStroke},
-  measures: {max: MAX_MEASURES, sanitize: sanitizeMeasure}
+  measures: {max: MAX_MEASURES, sanitize: sanitizeMeasure},
+  areas: {max: MAX_AREAS, sanitize: sanitizeArea}
 };
 
 /**

@@ -1,4 +1,6 @@
-import {MEASURE_INK, SIGN_PANELS, SIGN_SCROLLS, SIGN_TILT_RANGE, effectiveDisplay, UNITS, formatDistance, getHoloData} from "./data.mjs";
+import AreaLayer from "./area-layer.mjs";
+import {MEASURE_INK, SIGN_PANELS, SIGN_SCROLLS, SIGN_TILT_RANGE, effectiveDisplay, UNITS, formatArea, formatDistance,
+  getHoloData} from "./data.mjs";
 import MarkerLayer from "./marker-layer.mjs";
 import MeasureLayer from "./measure-layer.mjs";
 import StrokeLayer from "./stroke-layer.mjs";
@@ -220,12 +222,15 @@ varying vec2 vUV;
 varying float vDepth;
 ${HOLO_LOOK}
 uniform vec2 uPanelShape; // panel extents with the longer side = 1, so the frame is equally thick on all sides
+uniform sampler2D uAreas;  // areas drawn over the image (premultiplied)
 void main() {
   vec4 holo = holoColor(texture2D(uImage, vUV), 1.0) * depthFade(vDepth, 0.7);
   vec2 edge = min(vUV, 1.0 - vUV) * uPanelShape;
   float frame = smoothstep(0.012, 0.0, min(edge.x, edge.y));
+  vec4 area = texture2D(uAreas, vUV) * uOpacity * uFlicker;
   // Premultiplied output: alpha below brightness makes the hologram partly additive when composited.
-  gl_FragColor = vec4(holo.rgb + uColor * frame * 0.8 * uFlicker, holo.a * uSolidity + frame * 0.2) * volumeFade();
+  gl_FragColor = vec4(holo.rgb + uColor * frame * 0.8 * uFlicker + area.rgb, holo.a * uSolidity + frame * 0.2 + area.a * 0.5)
+    * volumeFade();
 }`;
 
 const DISC_VERTEX = `#version 300 es
@@ -316,6 +321,7 @@ uniform float uContours;
 uniform float uOpaque;    // 1: an opaque surface (it also fills the depth buffer)
 uniform float uLinesOnly; // 1: only the contour and coast lines (the wireframe styles; drawn by a mesh of their own)
 uniform float uDepthOnly; // 1: only fill the depth buffer, so lines behind hills are hidden
+uniform sampler2D uAreas;  // areas drawn over the image (premultiplied)
 out vec4 fragColor;
 
 void main() {
@@ -328,20 +334,22 @@ void main() {
   float distToLevel = abs(fract(level + 0.5) - 0.5);
   float contour = (1.0 - smoothstep(0.0, 1.2 * fwidth(level), distToLevel)) * smoothstep(0.008, 0.02, vHeight);
   vec3 lines = uColor * contour * uContours * 0.9 * uFlicker * depth;
+  // Areas lie on the surface in every style (the wireframe styles draw them with the lines).
+  vec4 area = texture(uAreas, vUV) * uOpacity * uFlicker * depth;
   if ( uLinesOnly > 0.5 ) {
     float coast = 1.0 - smoothstep(0.0, 1.5 * fwidth(vHeight), abs(vHeight - ${COAST_HEIGHT.toFixed(3)}));
     lines = lines * 1.6 + uColor * coast * 1.1 * uOpacity * uFlicker * depth;
-    fragColor = vec4(lines, 0.3 * max(lines.r, max(lines.g, lines.b))) * volumeFade();
+    fragColor = (vec4(lines, 0.3 * max(lines.r, max(lines.g, lines.b))) + vec4(area.rgb, area.a * 0.5)) * volumeFade();
     return;
   }
   vec4 tex = texture(uImage, vUV);
   if ( uOpaque > 0.5 ) {
     float a = tex.a * uOpacity * uFlicker;
-    fragColor = vec4(holoTint(tex, vShade) * scanline() * depth * a + lines, a) * volumeFade();
+    fragColor = vec4(holoTint(tex, vShade) * scanline() * depth * a + lines + area.rgb, a) * volumeFade();
     return;
   }
   vec4 holo = holoColor(tex, vShade) * depth;
-  fragColor = vec4(holo.rgb + lines, holo.a * uSolidity) * volumeFade();
+  fragColor = vec4(holo.rgb + lines + area.rgb, holo.a * uSolidity + area.a * 0.5) * volumeFade();
 }`;
 
 const WIRE_FRAGMENT = `#version 300 es
@@ -1060,6 +1068,7 @@ export default class HoloRenderer {
     this.depthReadState.depthMask = false;
 
     const {panel, disc, stroke, mote} = getPrograms();
+    this.areaLayer = new AreaLayer();
     this.discGeometry = createQuad();
     setQuad(this.discGeometry, DISC_RADIUS, 0, DISC_RADIUS, [-1, 1, 1, 1, 1, -1, -1, -1]);
     // The projector stays put on the floor: panning and zooming only move the content across and above it.
@@ -1080,7 +1089,8 @@ export default class HoloRenderer {
     this.tableGeometry = createQuad();
     setQuad(this.tableGeometry, TABLE_RADIUS / 0.97, 0, TABLE_RADIUS / 0.97, [0, 0, 1, 0, 1, 1, 0, 1]);
     this.tableShader = new PIXI.Shader(panel, this.#lookUniforms({
-      uPanelShape: new Float32Array([1000, 1000]), uCamera: this.offCameraUniform, uTarget: new Float32Array(2), uTint: 1
+      uPanelShape: new Float32Array([1000, 1000]), uCamera: this.offCameraUniform, uTarget: new Float32Array(2), uTint: 1,
+      uAreas: PIXI.Texture.EMPTY
     }));
     this.tableMesh = new PIXI.Mesh(this.tableGeometry, this.tableShader, this.state);
     this.tableMesh.visible = false;
@@ -1157,9 +1167,13 @@ export default class HoloRenderer {
   /** @type {Map<string, number[]>} Unsaved points of measurements whose ends are being moved. */
   #liveMeasurePoints = new Map();
   /** @type {Record<string, Map<string, {item: object, until: number}>>} Items sent to the GM, shown until saved. */
-  #pending = {strokes: new Map(), measures: new Map()};
+  #pending = {strokes: new Map(), measures: new Map(), areas: new Map()};
   /** @type {Record<string, Map<string, number>>} Items erased on this client, hidden until the deletion is saved. */
-  #erased = {strokes: new Map(), measures: new Map()};
+  #erased = {strokes: new Map(), measures: new Map(), areas: new Map()};
+  /** The area this client is drawing right now: {shape, points, color}. */
+  #liveArea = null;
+  /** Area whose card is open on this client. */
+  selectedArea = null;
   /** Half width of a medium stroke, in render-texture pixels. */
   #strokeHalfWidth = 1;
   /** UUID of the map shown ("" for a tile on its own settings); undefined before the first configure. */
@@ -1185,7 +1199,7 @@ export default class HoloRenderer {
   /** Strokes, measurements and waypoints go on top of the content, waypoints last. */
   #addOverlays() {
     this.stage.addChild(this.moteMesh, this.strokeLayer.container, this.liveStrokeLayer.container, this.measureLines.container,
-      this.liveMeasureLines.container, this.measureLabels.container, this.markerLayer.container, this.tableMesh, this.pingGraphics, this.offGraphics);
+      this.liveMeasureLines.container, this.measureLabels.container, this.areaLayer.labels, this.markerLayer.container, this.tableMesh, this.pingGraphics, this.offGraphics);
   }
 
   #lookUniforms(extra={}) {
@@ -1193,6 +1207,7 @@ export default class HoloRenderer {
       uCamera: this.cameraUniform, uTarget: this.targetUniform, uCenter: this.centerUniform, uColor: this.color,
       uVolume: this.volumeUniform, uFrag: this.fragUniform, uImage: PIXI.Texture.EMPTY,
       uTint: 0, uOpacity: 1, uSolidity: 1, uScan: 0, uScanDensity: 0, uScanPhase: 0, uFlicker: 1,
+      uAreas: this.areaLayer.overlay,
       ...extra
     };
   }
@@ -1636,6 +1651,7 @@ export default class HoloRenderer {
     this.#updateSign(seconds);
     this.#updateMotes(showTerrain, seconds);
     this.#layoutLines(showTerrain);
+    this.#layoutAreaLabels();
     this.#layoutMarkers(pitch);
     this.#drawPings();
     this.#updateTable(seconds);
@@ -1859,6 +1875,7 @@ export default class HoloRenderer {
     for ( const list of Object.values(this.#erased) ) list.clear();
     this.#liveStroke = null;
     this.#liveMeasure = null;
+    this.#liveArea = null;
     this.#liveStrokeVersion++;
     this.#liveMeasureVersion++;
   }
@@ -2037,6 +2054,7 @@ export default class HoloRenderer {
     const transform = new PIXI.Matrix(r, 0, 0, r, -x * r, -y * r);
     // The clear only resets depth while depth writes are on, which the last mesh drawn may have turned off.
     if ( this.tableMesh.visible && (this.#tableHoleDrawn !== this.#tableHole()) ) this.#drawTableTexture(renderer, this.#tableHole());
+    this.areaLayer.drawOverlay(renderer, this.#areaOverlays(), this.#hx / this.#hz);
     renderer.state.set(this.state);
     // Fully off, only the off state is drawn.
     const keep = [this.offGraphics, this.tableMesh, this.#sign?.floorMesh, this.#sign?.baseMesh];
@@ -2305,6 +2323,118 @@ export default class HoloRenderer {
     const metres = this.measureLength(points);
     if ( metres === null ) return game.i18n.localize("VIRAHOLO.Measure.NoScale");
     return formatDistance(metres, this.data.scale.unit);
+  }
+
+  /** Saved and pending areas, minus erased ones, as shown here. */
+  get areas() {
+    return this.#shown("areas");
+  }
+
+  /** Show (or with null stop showing) the area this client is drawing: {shape, points, color}. */
+  setLiveArea(area) {
+    this.#liveArea = area;
+  }
+
+  /**
+   * An area's outline as [u, v, ...]: a polygon's corners, or a circle traced round its centre. Circles are round
+   * across the map (in object space), whatever the image's shape.
+   */
+  areaOutline({shape, points}) {
+    if ( shape !== "circle" ) return points;
+    const [cu, cv, eu, ev] = points;
+    const rx = (eu - cu) * 2 * this.#hx;
+    const rz = (ev - cv) * 2 * this.#hz;
+    const radius = Math.hypot(rx, rz);
+    const steps = 64;
+    const outline = [];
+    for ( let k = 0; k < steps; k++ ) {
+      const angle = (k / steps) * TAU;
+      outline.push(cu + ((Math.cos(angle) * radius) / (2 * this.#hx)), cv + ((Math.sin(angle) * radius) / (2 * this.#hz)));
+    }
+    return outline;
+  }
+
+  /** What the overlay draws: every area shown, then the one being drawn (open while it's a polygon in progress). */
+  #areaOverlays() {
+    const shown = this.areas.map(area => ({id: area.id, color: area.color, outline: this.areaOutline(area), closed: true,
+      selected: area.id === this.selectedArea}));
+    const live = this.#liveArea;
+    if ( live?.points.length >= 4 ) {
+      const closed = live.shape === "circle";
+      shown.push({id: "live", color: live.color, outline: closed ? this.areaOutline(live) : live.points, closed, selected: false});
+    }
+    return shown;
+  }
+
+  /** Each area's label at its middle: its name, else its size (with a scale), else a plain mark. */
+  #layoutAreaLabels() {
+    const areas = this.areas;
+    const size = Math.clamp(Math.min(this.width, this.height) * 0.015, 6, 22);
+    const labels = areas.map(area => {
+      const squareMetres = this.areaSize(area);
+      const text = area.label || ((squareMetres === null) ? "◇" : formatArea(squareMetres, this.data.scale.unit));
+      return {id: area.id, text, color: area.color};
+    });
+    const sprites = this.areaLayer.sync(labels, size, this.selectedArea, this.resolution);
+    const project = this.#projector();
+    for ( const area of areas ) {
+      const sprite = sprites.get(area.id);
+      const [u, v] = this.#areaMiddle(area);
+      const point = project(this.#surfacePosition(u, v));
+      if ( !point ) {
+        sprite.container.visible = false;
+        continue;
+      }
+      sprite.place(point, this.#opacity * this.#flicker * this.#volumeAlpha(point) * depthFade(point.depth));
+    }
+  }
+
+  /** Where an area's label goes: a circle's centre, or the middle of a polygon's corners. */
+  #areaMiddle({shape, points}) {
+    if ( shape === "circle" ) return [points[0], points[1]];
+    let u = 0;
+    let v = 0;
+    for ( let i = 0; i < points.length; i += 2 ) {
+      u += points[i];
+      v += points[i + 1];
+    }
+    return [u / (points.length / 2), v / (points.length / 2)];
+  }
+
+  /**
+   * An area's size in square metres, from the hologram's scale (across the map, like distances); null without one.
+   * @param {object} area
+   * @returns {number|null}
+   */
+  areaSize(area) {
+    const {distance, unit, axis} = this.data.scale;
+    if ( !(distance > 0) || !UNITS[unit] ) return null;
+    const metresPerUnit = (distance * UNITS[unit].metres) / ((axis === "height") ? 2 * this.#hz : 2 * this.#hx);
+    const outline = this.areaOutline(area);
+    let twice = 0;
+    for ( let i = 0; i < outline.length; i += 2 ) {
+      const j = (i + 2) % outline.length;
+      const [x0, z0] = [outline[i] * 2 * this.#hx, outline[i + 1] * 2 * this.#hz];
+      const [x1, z1] = [outline[j] * 2 * this.#hx, outline[j + 1] * 2 * this.#hz];
+      twice += (x0 * z1) - (x1 * z0);
+    }
+    return Math.abs(twice / 2) * (metresPerUnit ** 2);
+  }
+
+  /** Where an image point on the surface is drawn, in render-texture pixels (null behind the camera). */
+  surfacePoint(u, v) {
+    return this.#project(this.#surfacePosition(u, v));
+  }
+
+  /** The area whose label is under a render-texture point, if any. */
+  areaAt(point) {
+    return this.areaLayer.hitTest(point.x, point.y);
+  }
+
+  /** Where an area's label is drawn (its top centre), in render-texture pixels. */
+  areaTip(id) {
+    const bounds = this.areaLayer.get(id)?.bounds;
+    return bounds ? {x: bounds.x + (bounds.width / 2), y: bounds.y} : null;
   }
 
   /**
@@ -2754,6 +2884,7 @@ export default class HoloRenderer {
     this.measureLines.destroy();
     this.liveMeasureLines.destroy();
     this.measureLabels.destroy();
+    this.areaLayer.destroy();
     this.moteMesh.destroy();
     this.stage.destroy({children: true});
     destroyGeometries(this.discGeometry, this.panelGeometry, this.moteGeometry, this.tableGeometry);

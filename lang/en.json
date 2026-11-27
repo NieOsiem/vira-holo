@@ -16,6 +16,7 @@
       "draw": "Draw tool: drag across the hologram to ink it",
       "erase": "Eraser: click or drag over drawings and measurements to remove them",
       "measure": "Ruler: click for measuring (drag, or click both ends), again for moving ends, again for off. Click a distance label for options.",
+      "area": "Area tool: click corners (click the first one, or double-click, to close; Escape cancels), or drag out a circle. Click an area's label for options.",
       "ink": "Ink",
       "customInk": "Custom ink",
       "width": {
@@ -127,6 +128,10 @@
       "clearMeasures": "Clear all measurements",
       "clearMeasuresConfirm": "Remove every measurement from this hologram?",
       "measuresHint": "Measure with the ruler glyph on the hologram's tool ring; click a distance label to delete it or set the scale from it.",
+      "areaCount": "Areas",
+      "clearAreas": "Clear all areas",
+      "clearAreasConfirm": "Remove every area from this hologram?",
+      "areasHint": "Mark out areas with the area glyph on the hologram's tool ring; click an area's label to name, recolour or delete it.",
       "camera": {
         "spin": "Auto-spin speed"
       },
@@ -266,6 +271,15 @@
       "HintGM": "Enter this line's real length to set the hologram's scale from it."
     },
     "MeasureLimit": "This hologram already has {max} measurements; delete some first.",
+    "AreaLimit": "This hologram already has {max} areas; delete some first.",
+    "Area": {
+      "Title": "Area",
+      "Label": "Name",
+      "Close": "Close",
+      "Delete": "Delete",
+      "CustomInk": "Custom ink",
+      "NoScale": "Set a scale (Content tab) to see its size"
+    },
     "Display": {
       "wireXray": "Wireframe, see-through",
       "wire": "Wireframe, opaque",

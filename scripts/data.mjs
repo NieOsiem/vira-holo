@@ -77,7 +77,12 @@ export const DEFAULTS = Object.freeze({
      */
     strokes: [],
     /** Measurements: {id, points: [ua, va, ub, vb]}, two points on the image like waypoints. */
-    measures: []
+    measures: [],
+    /**
+     * Areas: {id, shape, points, color, label}. A "polygon" has 3 to MAX_AREA_POINTS corners [u, v, ...]; a
+     * "circle" is [centre u, v, a point on its rim u, v], round across the map whatever its shape.
+     */
+    areas: []
   },
   /**
    * Real-world size of the image: it covers `distance` units across its width or height ("axis"). A distance of 0
@@ -310,6 +315,9 @@ export const MAX_STROKE_POINTS = 400;
 /** Stroke width tiers: tier → line width relative to a medium stroke. */
 export const STROKE_WIDTHS = Object.freeze({1: 0.5, 2: 1, 3: 1.8});
 export const MAX_MEASURES = 50;
+export const MAX_AREAS = 50;
+export const MAX_AREA_POINTS = 64;
+export const AREA_SHAPES = Object.freeze(["polygon", "circle"]);
 /** Looks of a switched-off hologram: a small glowing square, or a round table (with a hole if the tile is big enough). */
 export const OFF_STYLES = Object.freeze(["square", "table"]);
 
@@ -383,6 +391,42 @@ export function contrastingInk(color) {
  * @param {object} marker
  * @returns {object|null}   Null when it has no usable position or ID
  */
+/**
+ * An area with its points checked and rounded like a stroke's.
+ * @param {object} area
+ * @returns {object|null}
+ */
+export function sanitizeArea(area) {
+  const {id, shape, points, color, label} = area ?? {};
+  if ( (typeof id !== "string") || !/^[a-zA-Z0-9]{16}$/.test(id) || !AREA_SHAPES.includes(shape) ) return null;
+  if ( !Array.isArray(points) || !points.every(Number.isFinite) ) return null;
+  const valid = (shape === "circle") ? (points.length === 4)
+    : (!(points.length % 2) && (points.length >= 6) && (points.length <= MAX_AREA_POINTS * 2));
+  if ( !valid ) return null;
+  return {
+    id, shape,
+    points: points.map(p => Math.round(Math.clamp(p, 0, 1) * 10000) / 10000),
+    color: /^#[0-9a-f]{6}$/i.test(color) ? color : INKS[0],
+    label: String(label ?? "").slice(0, MAX_LABEL_LENGTH)
+  };
+}
+
+/**
+ * An area for display, in the scale's measuring system: square metres up to a tenth of a square kilometre, then
+ * square kilometres; square feet up to a tenth of a square mile, then square miles.
+ * @param {number} squareMetres
+ * @param {string} unit   The scale's unit
+ */
+export function formatArea(squareMetres, unit) {
+  const imperial = UNITS[unit]?.system === "imperial";
+  const [small, large] = imperial ? ["ft", "mi"] : ["m", "km"];
+  const label = key => game.i18n.localize(`VIRAHOLO.Units.${key}`);
+  const inLarge = squareMetres / (UNITS[large].metres ** 2);
+  const format = (v, digits) => v.toLocaleString(game.i18n.lang, {maximumFractionDigits: digits});
+  if ( inLarge >= 0.1 ) return `${format(inLarge, (inLarge < 100) ? 2 : 0)} ${label(large)}²`;
+  return `${format(squareMetres / (UNITS[small].metres ** 2), 0)} ${label(small)}²`;
+}
+
 export function sanitizeMarker(marker) {
   const {id, u, v, label, glyph, color, size, locked} = marker ?? {};
   if ( (typeof id !== "string") || !/^[a-zA-Z0-9]{16}$/.test(id) ) return null;

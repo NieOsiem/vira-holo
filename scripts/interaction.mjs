@@ -1,5 +1,6 @@
-import {DEFAULTS, MODULE_ID, allowedDisplays, effectiveDisplay, INKS, MARKER_GLYPHS, MAX_MEASURES, MAX_STROKES, MAX_STROKE_POINTS, canDrive, contrastingInk,
-  defaultCamera, sanitizeScale} from "./data.mjs";
+import {DEFAULTS, MODULE_ID, allowedDisplays, effectiveDisplay, INKS, MARKER_GLYPHS, MAX_AREAS, MAX_AREA_POINTS, MAX_MEASURES,
+  MAX_STROKES, MAX_STROKE_POINTS, canDrive, contrastingInk, defaultCamera, sanitizeScale} from "./data.mjs";
+import {closeAreaCard, isAreaCardEvent, openAreaCard, updateAreaCard} from "./area-card.mjs";
 import * as history from "./history.mjs";
 import HoloConfig from "./holo-config.mjs";
 import {MAX_DIST, MAX_PITCH, MIN_DIST, MIN_PITCH} from "./holo-renderer.mjs";
@@ -64,6 +65,10 @@ let ink = null;
 let strokeWidth = 2;
 /** Where a click-click measurement started ({u, v}), waiting for its second click. */
 let measureStart = null;
+/** An area being drawn corner by corner: {tile, holo, points: [u, v, ...], color, lastClick}. */
+let areaDraft = null;
+/** Screen pixels within which a click on an area's first corner closes it. */
+const CLOSE_REACH = 12;
 /** The tile whose measurement in progress other users are being shown, so they can be told when it ends. */
 let measurePreviewTile = null;
 let lastPreview = 0;
@@ -95,6 +100,7 @@ export function registerInteraction() {
   Hooks.once("canvasReady", () => {
     canvas.app.ticker.add(updateCard);
     canvas.app.ticker.add(updateMeasureCard);
+    canvas.app.ticker.add(updateAreaCard);
   });
 }
 
@@ -117,6 +123,7 @@ function setEngaged(hit) {
     erase: () => toggleTool("erase", holo),
     // The ruler has two modes: off → making measurements → moving their ends → off.
     measure: () => setTool((tool === "measure") ? "adjust" : ((tool === "adjust") ? null : "measure"), holo),
+    area: () => toggleTool("area", holo),
     undo: () => history.undo(tile.document),
     redo: () => history.redo(tile.document),
     power: () => {
@@ -144,9 +151,9 @@ function toggleTool(name, holo) {
 function setTool(name, holo) {
   cancelMeasure();
   tool = name;
-  for ( const glyph of ["waypoint", "ping", "draw", "erase"] ) setGlyphOn(glyph, tool === glyph);
+  for ( const glyph of ["waypoint", "ping", "draw", "erase", "area"] ) setGlyphOn(glyph, tool === glyph);
   setGlyphOn("measure", ["measure", "adjust"].includes(tool), (tool === "adjust") ? 2 : 1);
-  if ( !["waypoint", "draw"].includes(tool) ) return setStrip(null);
+  if ( !["waypoint", "draw", "area"].includes(tool) ) return setStrip(null);
   setStrip({
     glyph: tool,
     ink: currentInk(holo),
@@ -163,10 +170,13 @@ function currentInk(holo) {
 function closeCards() {
   closeCard();
   closeMeasureCard();
+  closeAreaCard();
 }
 
-/** Drop a measurement waiting for its second click. */
+/** Drop a measurement waiting for its second click, and an area being drawn. */
 function cancelMeasure() {
+  if ( areaDraft ) areaDraft.holo.setLiveArea(null);
+  areaDraft = null;
   measureStart = null;
   if ( engaged ) getHolograms().get(engaged)?.setLiveMeasure(null);
   endMeasurePreview(null);
@@ -192,7 +202,7 @@ function endMeasurePreview(measure) {
 }
 
 function onKeyDown(event) {
-  if ( (event.key !== "Escape") || !measureStart ) return;
+  if ( (event.key !== "Escape") || !(measureStart || areaDraft) ) return;
   event.preventDefault();
   event.stopImmediatePropagation(); // Don't also deselect or close windows
   cancelMeasure();
@@ -299,7 +309,8 @@ function pageFlipAt(event) {
 }
 
 function onPointerDown(event) {
-  if ( (event.button !== 0) || isRingEvent(event) || isCardEvent(event) || isMeasureCardEvent(event) ) return;
+  if ( (event.button !== 0) || isRingEvent(event) || isCardEvent(event) || isMeasureCardEvent(event)
+    || isAreaCardEvent(event) ) return;
   // A double click on a sign's projector switches the sign on or off.
   const projector = !(event.ctrlKey || event.metaKey) && projectorAt(event);
   if ( projector ) {
@@ -363,7 +374,7 @@ function onPointerDown(event) {
     eraseAlong(tile, holo, erasing, erasing);
   }
   // A pressed pin opens its card on click; it's only dragged when unlocked (a locked pin lets the drag orbit).
-  const pressed = ["draw", "erase", "measure", "adjust"].includes(tool) ? null : holo.markerAt(texturePoint);
+  const pressed = ["draw", "erase", "measure", "adjust", "area"].includes(tool) ? null : holo.markerAt(texturePoint);
   // Portals belong to their map's journal: players can never drag them.
   const pressedMarker = holo.markers.find(m => m.id === pressed);
   const locked = !!pressedMarker?.locked || (!!pressedMarker?.portal && !game.user.isGM);
@@ -376,6 +387,11 @@ function onPointerDown(event) {
   const label = canOpenLabel ? holo.measureAt(texturePoint) : null;
   const measuring = (tool === "measure") && !event.shiftKey && !label;
   const measure = measuring ? startMeasure(tile, holo, texturePoint) : null;
+  // An area's label opens its card, without a tool or with the area tool between areas.
+  const areaLabel = (!pressed && !measureEnd && !label && ((tool === null) || ((tool === "area") && !areaDraft)))
+    ? holo.areaAt(texturePoint) : null;
+  // With the area tool, a press starts a circle (if dragged) or places a corner (on release).
+  const area = ((tool === "area") && !event.shiftKey && !areaLabel) ? {start: holo.surfaceAt(texturePoint)} : null;
   drag = {
     tile, holo,
     pointerId: event.pointerId,
@@ -385,6 +401,8 @@ function onPointerDown(event) {
     label,
     measure,
     measureEnd,
+    areaLabel,
+    area,
     toolOn: !!tool,
     pen,
     stroke: pen ? startStroke(tile, holo, canvasPoint(event)) : null,
@@ -401,7 +419,10 @@ function onPointerDown(event) {
 }
 
 function onPointerMove(event) {
-  if ( !drag ) return hoverMeasure(event);
+  if ( !drag ) {
+    hoverArea(event);
+    return hoverMeasure(event);
+  }
   if ( event.pointerId !== drag.pointerId ) return;
   swallow(event);
   if ( drag.pen ) return extendStroke(event);
@@ -418,6 +439,7 @@ function onPointerMove(event) {
   const {start, camera, holo} = drag;
   if ( drag.measure ) return moveMeasureEnd(drag.tile, holo, drag.measure, canvasPoint(event));
   if ( drag.measureEnd ) return dragMeasureEnd(drag.tile, holo, drag.measureEnd, canvasPoint(event));
+  if ( drag.area ) return dragCircle(holo, drag.area, canvasPoint(event));
 
   // Dragging a waypoint slides it across the surface under the pointer.
   if ( drag.marker ) {
@@ -448,7 +470,7 @@ function onPointerUp(event) {
   if ( !drag || (event.pointerId !== drag.pointerId) ) return;
   swallow(event);
   const {tile, holo, camera, moved, pressed, marker, label, measure, measureEnd, position, pan, toolOn, pen, stroke,
-    erasing} = drag;
+    erasing, area, areaLabel} = drag;
   drag = null;
   holo.dragging = false;
   if ( stroke ) holo.setLiveStroke(null);
@@ -469,6 +491,8 @@ function onPointerUp(event) {
     return;
   }
   if ( label && !moved ) return openMeasure(tile, holo, label);
+  if ( areaLabel && !moved ) return openArea(tile, holo, areaLabel);
+  if ( area ) return moved ? finishCircle(tile, holo, area) : placeCorner(tile, holo, canvasPoint(event));
   const portal = pressed && holo.markers.find(m => m.id === pressed)?.portal;
   if ( pressed && !moved ) return portal ? openPortalCard(tile, holo, pressed, portal) : openMarkerCard(tile, holo, pressed);
   if ( marker ) {
@@ -697,6 +721,104 @@ function finishMeasure(tile, holo, {a, b, second}, moved) {
   history.edit(tile.document, "measures", {type: "add", item: measure});
 }
 
+/* -------------------------------------------- */
+/*  Areas                                       */
+/* -------------------------------------------- */
+
+/** Room for one more area on this hologram? Warns if not. */
+function canAddArea(holo) {
+  if ( holo.areas.length < MAX_AREAS ) return true;
+  ui.notifications.warn(game.i18n.format("VIRAHOLO.AreaLimit", {max: MAX_AREAS}));
+  return false;
+}
+
+/** Dragging out a circle from its centre (where the press met the surface) to the pointer. */
+function dragCircle(holo, area, point) {
+  if ( !area.start || areaDraft ) return;
+  const edge = holo.surfaceAt(holo.toTexturePoint(point));
+  if ( !edge ) return;
+  area.edge = edge;
+  holo.setLiveArea({shape: "circle", points: [area.start.u, area.start.v, edge.u, edge.v], color: currentInk(holo)});
+}
+
+function finishCircle(tile, holo, {start, edge}) {
+  holo.setLiveArea(null);
+  if ( !start || !edge || areaDraft || (Math.hypot(edge.u - start.u, edge.v - start.v) < 0.005) ) return;
+  if ( canAddArea(holo) ) saveArea(tile, holo, "circle", [start.u, start.v, edge.u, edge.v]);
+}
+
+/**
+ * A click with the area tool: start an area, add a corner, or close it (a click on its first corner, a double
+ * click, or the most corners an area may have).
+ */
+function placeCorner(tile, holo, point) {
+  const corner = holo.surfaceAt(holo.toTexturePoint(point));
+  if ( !corner ) return;
+  const now = performance.now();
+  if ( !areaDraft || (areaDraft.tile !== tile) ) {
+    cancelMeasure();
+    if ( !canAddArea(holo) ) return;
+    areaDraft = {tile, holo, points: [corner.u, corner.v], color: currentInk(holo), lastClick: now};
+    return showDraft(holo, corner);
+  }
+  const draft = areaDraft;
+  const corners = draft.points.length / 2;
+  const doubleClick = now - draft.lastClick < DOUBLE_CLICK_MS;
+  draft.lastClick = now;
+  if ( (corners >= 3) && (doubleClick || nearFirstCorner(tile, holo, draft, point)) ) return closeDraft(tile, holo);
+  draft.points.push(corner.u, corner.v);
+  if ( corners + 1 >= MAX_AREA_POINTS ) return closeDraft(tile, holo);
+  showDraft(holo, corner);
+}
+
+/** Is a canvas point within CLOSE_REACH screen pixels of the draft's first corner? */
+function nearFirstCorner(tile, holo, draft, point) {
+  const first = holo.surfacePoint(draft.points[0], draft.points[1]);
+  if ( !first ) return false;
+  const here = holo.toTexturePoint(point);
+  const screenPerLayout = canvas.stage.scale.x * (tile.document.width / holo.width);
+  return Math.hypot(here.x - first.x, here.y - first.y) * screenPerLayout <= CLOSE_REACH;
+}
+
+/** Show the draft's corners and an edge on to where the pointer is. */
+function showDraft(holo, pointer) {
+  const {points, color} = areaDraft;
+  holo.setLiveArea({shape: "polygon", points: pointer ? [...points, pointer.u, pointer.v] : points, color});
+}
+
+function hoverArea(event) {
+  if ( !areaDraft || (areaDraft.tile !== engaged) || (event.target !== canvas.app?.view) ) return;
+  const pointer = areaDraft.holo.surfaceAt(areaDraft.holo.toTexturePoint(canvasPoint(event)));
+  if ( pointer ) showDraft(areaDraft.holo, pointer);
+}
+
+function closeDraft(tile, holo) {
+  const {points} = areaDraft;
+  cancelMeasure();
+  if ( points.length >= 6 ) saveArea(tile, holo, "polygon", points);
+}
+
+function saveArea(tile, holo, shape, points) {
+  const area = {id: foundry.utils.randomID(), shape, points, color: currentInk(holo), label: ""};
+  holo.addPending("areas", area);
+  history.edit(tile.document, "areas", {type: "add", item: area});
+}
+
+function openArea(tile, holo, id) {
+  closeCards();
+  openAreaCard(tile, holo, id, {
+    update: changes => {
+      const before = holo.annotation("areas", id);
+      if ( before ) history.edit(tile.document, "areas", {type: "update", id, changes}, before);
+    },
+    remove: () => {
+      const before = holo.annotation("areas", id);
+      holo.hide("areas", id);
+      history.edit(tile.document, "areas", {type: "delete", id}, before);
+    }
+  });
+}
+
 /** Start moving one end of a measurement. */
 function grabMeasureEnd(holo, {id, end}) {
   const measure = holo.data.annotations.measures.find(m => m.id === id);
@@ -714,6 +836,7 @@ function dragMeasureEnd(tile, holo, measureEnd, point) {
 
 function openMeasure(tile, holo, id) {
   closeCard();
+  closeAreaCard();
   openMeasureCard(tile, holo, id, {
     remove: () => {
       const before = holo.annotation("measures", id);
@@ -731,6 +854,7 @@ function openMeasure(tile, holo, id) {
 
 function openMarkerCard(tile, holo, id) {
   closeMeasureCard();
+  closeAreaCard();
   openCard(tile, holo, id, {
     update: changes => history.edit(tile.document, "markers", {type: "update", id, changes},
       holo.annotation("markers", id)),
@@ -742,6 +866,7 @@ function openMarkerCard(tile, holo, id) {
 /** A portal's card: enter its map, focus it, and (GMs) rename the map or restyle the portal. */
 function openPortalCard(tile, holo, id, uuid) {
   closeMeasureCard();
+  closeAreaCard();
   openCard(tile, holo, id, {
     update: changes => updatePortal(uuid, changes),
     enter: () => travel(tile, holo, uuid),

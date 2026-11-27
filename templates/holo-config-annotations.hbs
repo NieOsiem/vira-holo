@@ -37,5 +37,15 @@
       </div>
       <p class="hint">{{localize "VIRAHOLO.Config.measuresHint"}}</p>
     </div>
+    <div class="form-group">
+      <label>{{localize "VIRAHOLO.Config.areaCount"}}</label>
+      <div class="form-fields">
+        <span class="vira-holo-count">{{areaCount}}</span>
+        <button type="button" data-action="clearAreas" {{disabled (not areaCount)}}>
+          <i class="fa-solid fa-trash" inert></i> {{localize "VIRAHOLO.Config.clearAreas"}}
+        </button>
+      </div>
+      <p class="hint">{{localize "VIRAHOLO.Config.areasHint"}}</p>
+    </div>
   </fieldset>
 </section>
