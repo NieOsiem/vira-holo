@@ -65,8 +65,9 @@ async function loadImage(src) {
  */
 export default class TextPanel {
   /**
-   * @type {{texture: PIXI.RenderTexture, window: number[], rate: number[]}[]}
-   * window: the share of the texture (u, v) the panel shows; rate: how far that window moves per second (u, v).
+   * @type {{texture: PIXI.RenderTexture, window: number[], rate: number[], targets: number[][]}[]}
+   * window: the share of the texture (u, v) the panel shows; rate: how far that window moves per second (u, v);
+   * targets: where on the panel there is something to see, as [u0, v0, u1, v1] boxes (lines of text, images).
    */
   pages = [];
   #key = "";
@@ -139,8 +140,17 @@ export default class TextPanel {
     canvas.app.renderer.render(container, {renderTexture: texture, clear: true});
     container.destroy({children: true}); // Text textures go with it; image textures belong to Foundry's cache
     const pace = layout.pace * speed;
+    // Targets on the panel (its window onto the texture). Scrolling content passes through the whole window.
+    const panelW = width * scale;
+    const panelH = height * scale;
+    let targets = layout.targets.map(([x0, y0, x1, y1]) => [x0 / panelW, y0 / panelH, x1 / panelW, y1 / panelH]);
+    if ( targets.length && (scroll === "up") ) {
+      targets = [[Math.min(...targets.map(t => t[0])), 0.1, Math.max(...targets.map(t => t[2])), 0.9]];
+    } else if ( targets.length && (scroll === "left") ) {
+      targets = [[0.06, Math.min(...targets.map(t => t[1])), 0.94, Math.max(...targets.map(t => t[3]))]];
+    }
     return {
-      texture,
+      texture, targets,
       window: [Math.min(1, (width * scale) / layout.width), Math.min(1, (height * scale) / layout.height)],
       rate: scroll === "left" ? [pace / layout.width, 0] : (scroll === "up" ? [0, pace / layout.height] : [0, 0])
     };
@@ -206,13 +216,25 @@ function layoutColumn(items, {font, size, align, scroll, width, height, scale}) 
   });
   const contentHeight = placed.reduce((sum, item) => sum + item.h, 0) + (gap * Math.max(placed.length - 1, 0));
   let y = scrolling ? pad : pad + Math.max(0, (innerH - contentHeight) / 2);
+  const targets = [];
   for ( const item of placed ) {
     item.x = item.texture ? pad + (anchor * (innerW - item.w)) : pad + (anchor * innerW);
     item.y = y;
+    if ( item.texture ) targets.push([item.x, y, item.x + item.w, y + item.h]);
+    else {
+      // Each line's body: lines are aligned like the block, so each starts where the anchor puts its own width.
+      const {lines, lineWidths, lineHeight} = PIXI.TextMetrics.measureText(item.text, style);
+      lines.forEach((line, i) => {
+        if ( !line.trim() ) return;
+        const x0 = item.x - (anchor * lineWidths[i]);
+        const top = y + (i * lineHeight);
+        targets.push([x0, top + (lineHeight * 0.2), x0 + lineWidths[i], top + (lineHeight * 0.8)]);
+      });
+    }
     y += item.h + gap;
   }
   return {
-    items: placed, width: W,
+    items: placed, width: W, targets,
     height: scrolling ? contentHeight + (2 * pad) + H : H,
     pace: fontSize * LINE_HEIGHT * SCROLL_UP
   };
@@ -233,14 +255,16 @@ function layoutTicker(items, {font, size, align, width, height, scale}) {
     if ( item.texture ) {
       const h = Math.min(innerH, fontSize * LINE_HEIGHT * 2.5);
       const w = h * (item.texture.width / item.texture.height);
-      placed.push({texture: item.texture, w, h, x, y: (H - h) / 2});
+      placed.push({texture: item.texture, w, h, x, y: (H - h) / 2, target: [0, (H - h) / 2, 0, (H + h) / 2]});
       x += w + gap;
       continue;
     }
     const text = item.text.split("\n").map(line => line.trim()).filter(Boolean).join("   •   ");
     const metrics = PIXI.TextMetrics.measureText(text, style);
-    placed.push({text, style, anchor: 0, x, y: (H - metrics.height) / 2});
+    placed.push({text, style, anchor: 0, x, y: (H - metrics.height) / 2,
+      target: [0, (H - (fontSize * 0.6)) / 2, 0, (H + (fontSize * 0.6)) / 2]});
     x += metrics.width + gap;
   }
-  return {items: placed, width: Math.max(W, x + (gap / 2)), height: H, pace: fontSize * SCROLL_LEFT};
+  return {items: placed, width: Math.max(W, x + (gap / 2)), height: H, pace: fontSize * SCROLL_LEFT,
+    targets: placed.map(item => item.target)};
 }

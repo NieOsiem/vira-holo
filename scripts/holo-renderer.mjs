@@ -96,6 +96,8 @@ const SIGN_BASES = Object.freeze({
   flush: {height: 0.001, width: hx => Math.min(Math.max(hx * 0.5, 0.12), hx * 0.95), depth: 0.03, radius: 0.03,
     lens: 0.15, lensOffset: 0, lensWidth: w => w - 0.06, shadow: 0, style: 2}
 });
+/** Light rays per page of a sign without a panel. */
+const SIGN_RAYS = 72;
 /** How long pages take to change. */
 const SIGN_PAGE_CHANGE_S = 0.9;
 /** One scanline per this many scene pixels along a sign's panel. */
@@ -551,15 +553,21 @@ void main() {
   float reach = uReveal * 1.1;
   float shown = 1.0 - smoothstep(reach - 0.08, reach, up);
   vec4 tex = page(uImage, uWindow);
+  // Without a panel (style "none"), flashes only light what is on it, so its shape never shows.
+  float bare = (uStyle > 0.5 && uStyle < 1.5) ? 1.0 : 0.0;
+  float content = tex.a;
   // The next page rises from the foot in ragged bands of rows, behind a bright edge.
   float changing = 0.0;
   if ( uChange > 0.0 ) {
     float rows = floor(vUV.y * 36.0);
     float line = up + (hash(rows) - 0.5) * 0.14;
     float front = uChange * 1.3 - 0.15;
-    tex = mix(tex, page(uImage2, uWindow2), step(line, front));
+    vec4 next = page(uImage2, uWindow2);
+    content = max(content, next.a);
+    tex = mix(tex, next, step(line, front));
     changing = exp(-pow((line - front) * 22.0, 2.0));
   }
+  float flashes = mix(1.0, smoothstep(0.0, 0.4, content), bare);
   // Scrolling content fades in and out at the panel's edges.
   if ( uScroll > 0.5 ) {
     float along = (uScroll > 1.5) ? vUV.x : vUV.y;
@@ -606,13 +614,13 @@ void main() {
   }
 
   float band = exp(-pow((up - uSweep) * 12.0, 2.0));
-  float pane = (uStyle > 0.5 && uStyle < 1.5) ? 0.0 : 1.0;
+  float pane = 1.0 - bare;
   float glow = uOpacity * uFlicker;
   vec3 rgb = holo.rgb * (1.0 + band * 0.8) + uColor * glow * (fill * 0.6 + frame * 0.6 + bracket + band * 0.07 * pane
-    + foot * 0.5 + dots * 0.9 + changing * 0.6);
+    + foot * 0.5 + dots * 0.9 + changing * 0.6 * flashes);
   float a = holo.a * uSolidity + glow * (fill * 0.5 + frame * 0.2 + bracket * 0.35 + band * 0.03 * pane + dots * 0.3);
   // While materialising, a bright edge runs up the panel ahead of what is shown.
-  float front = exp(-pow((up - reach + 0.04) * 28.0, 2.0)) * smoothstep(0.0, 0.05, uReveal) * (1.0 - step(1.0, uReveal));
+  float front = exp(-pow((up - reach + 0.04) * 28.0, 2.0)) * smoothstep(0.0, 0.05, uReveal) * (1.0 - step(1.0, uReveal)) * flashes;
   fragColor = (vec4(rgb, a) * shown * clip + vec4(uColor * front * glow * 1.4, front * glow * 0.2)) * volumeFade();
 }`;
 
@@ -640,6 +648,52 @@ void main() {
   fragColor = vec4(uColor * a, 0.0); // Light only: it brightens what's behind it
 }`;
 
+// Without a panel to light, a sign's light is a bundle of rays from the lens to its lines of text and images.
+const SIGN_RAY_VERTEX = `#version 300 es
+precision highp float;
+in vec3 aVertexPosition;
+// Across the ray (0..1), from the lens (0) to its target (1), its own random number (plus 1 for a broad, faint ray of
+// haze rather than a thin, bright one), and its page.
+in vec4 aTextureCoord;
+${CAMERA_UNIFORMS}
+out vec3 vPart;
+out float vPage;
+out float vDepth;
+${PROJECT}
+void main() {
+  vPart = aTextureCoord.xyz;
+  vPage = aTextureCoord.w;
+  gl_Position = project(aVertexPosition);
+}`;
+
+const SIGN_RAY_FRAGMENT = `#version 300 es
+precision highp float;
+in vec3 vPart;
+in float vPage;
+uniform vec3 uColor;
+uniform float uOpacity;
+uniform float uFlicker;
+uniform float uPhase; // 0..1, wrapping
+uniform vec3 uPages;  // page shown, next page, page change progress
+${VOLUME}
+out vec4 fragColor;
+
+void main() {
+  float shown = ((abs(vPage - uPages.x) < 0.5) ? 1.0 - uPages.z : 0.0) + ((abs(vPage - uPages.y) < 0.5) ? uPages.z : 0.0);
+  if ( shown <= 0.0 ) discard;
+  float t = vPart.y;
+  float broad = step(1.0, vPart.z);
+  float k = fract(vPart.z);
+  float across = 1.0 - abs(vPart.x * 2.0 - 1.0);
+  // Soft from the lens, strongest on the way, dissolving into what it lights.
+  float along = smoothstep(0.0, 0.15, t) * (1.0 - smoothstep(0.75, 1.0, t));
+  float twinkle = 0.55 + 0.45 * sin((uPhase * 7.0 + k) * 6.2831853);
+  float pulse = exp(-pow((t - fract(uPhase * 4.0 + k)) * 10.0, 2.0));
+  float strength = mix(0.32 + 0.4 * pulse, 0.11 + 0.06 * pulse, broad);
+  float a = strength * across * across * along * twinkle * shown * uOpacity * uFlicker * volumeFade();
+  fragColor = vec4(uColor * a, 0.0);
+}`;
+
 const SIGN_FLOOR_FRAGMENT = `#version 300 es
 precision highp float;
 in vec3 vPart; // floor position (x, z)
@@ -650,6 +704,7 @@ uniform vec4 uBase;     // projector centre (x, z) and half size
 uniform float uRadius;  // projector corner radius
 uniform float uShadow;  // projector shadow strength (none when flush with the floor)
 uniform vec4 uPanel;    // panel half width, foot z, top z, lens z
+uniform float uUnder;   // light under the panel (none when the panel isn't shown, so its shape doesn't show)
 uniform float uLens;    // lens half width
 ${SDF}
 ${VOLUME}
@@ -665,7 +720,7 @@ void main() {
   // The beam lights the floor between the lens and the panel, fading in past the lens.
   float dLens = length(vec2(max(abs(p.x) - uLens, 0.0), p.y - uPanel.w));
   float spill = exp(-dLens * 12.0) * smoothstep(uPanel.w - 0.02, uPanel.w + 0.08, p.y);
-  float light = (0.09 * under + 0.16 * spill) * uOpacity * uFlicker;
+  float light = (0.09 * under * uUnder + 0.16 * spill) * uOpacity * uFlicker;
   fragColor = vec4(uColor * light, shadow) * volumeFade();
 }`;
 
@@ -767,7 +822,8 @@ function getPrograms() {
     signPanel: PIXI.Program.from(DISC_VERTEX, SIGN_PANEL_FRAGMENT, "vira-holo-sign-panel"),
     signBeam: PIXI.Program.from(SIGN_PART_VERTEX, SIGN_BEAM_FRAGMENT, "vira-holo-sign-beam"),
     signFloor: PIXI.Program.from(SIGN_PART_VERTEX, SIGN_FLOOR_FRAGMENT, "vira-holo-sign-floor"),
-    signBase: PIXI.Program.from(SIGN_PART_VERTEX, SIGN_BASE_FRAGMENT, "vira-holo-sign-base")
+    signBase: PIXI.Program.from(SIGN_PART_VERTEX, SIGN_BASE_FRAGMENT, "vira-holo-sign-base"),
+    signRays: PIXI.Program.from(SIGN_RAY_VERTEX, SIGN_RAY_FRAGMENT, "vira-holo-sign-rays")
   };
   return programs;
 }
@@ -1397,7 +1453,7 @@ export default class HoloRenderer {
     const beamShader = new PIXI.Shader(programs.signBeam, {...camera, uOpacity: 1, uFlicker: 1, uPhase: 0});
     const floorShader = new PIXI.Shader(programs.signFloor, {...camera, uOpacity: 1, uFlicker: 1,
       uBase: new Float32Array([0, baseZ, baseHalf, depth]), uRadius: radius, uShadow: shadow,
-      uPanel: new Float32Array([hx, sign.zb, topZ, lensZ]), uLens: lensHalf});
+      uPanel: new Float32Array([hx, sign.zb, topZ, lensZ]), uUnder: 1, uLens: lensHalf});
     const baseShader = new PIXI.Shader(programs.signBase, {...camera, uSize: new Float32Array([baseHalf, depth]),
       uRadius: radius, uStyle: style, uLensAt: new Float32Array([lensOffset, lensHalf]), uLensGlow: 1, uPower: 1,
       uPhase: 0});
@@ -1409,13 +1465,63 @@ export default class HoloRenderer {
     ];
     const [floorMesh, baseMesh, beamMesh] = [floorShader, baseShader, beamShader]
       .map((shader, i) => new PIXI.Mesh(geometries[i], shader, this.state));
-    Object.assign(sign, {geometries, floorMesh, baseMesh, beamMesh, baseZ, baseHalf});
+    const rayShader = new PIXI.Shader(programs.signRays, {...camera, uOpacity: 1, uFlicker: 1, uPhase: 0,
+      uPages: new Float32Array(3)});
+    const rayGeometry = new PIXI.Geometry()
+      .addAttribute("aVertexPosition", new Float32Array(0), 3)
+      .addAttribute("aTextureCoord", new Float32Array(0), 4)
+      .addIndex(new Uint16Array(0));
+    const rayMesh = new PIXI.Mesh(rayGeometry, rayShader, this.state);
+    Object.assign(sign, {geometries, floorMesh, baseMesh, beamMesh, rayMesh, baseZ, baseHalf, lensZ, lensHalf, rayPages: null});
     this.panelMesh.shader = this.signPanelShader;
     // From above: the floor, the base, the panel over them, and the beam's light in front of the panel.
     const at = this.stage.getChildIndex(this.panelMesh);
     this.stage.addChildAt(floorMesh, at);
     this.stage.addChildAt(baseMesh, at + 1);
     this.stage.addChildAt(beamMesh, at + 3);
+    this.stage.addChildAt(rayMesh, at + 4);
+  }
+
+  /**
+   * Aim a sign's rays: SIGN_RAYS per page, from along the lens to random spots in the page's targets (lines of
+   * text, images), more to the bigger ones. Rebuilt when the pages are re-rendered.
+   */
+  #aimRays(pages) {
+    const sign = this.#sign;
+    sign.rayPages = pages;
+    const positions = [];
+    const coords = [];
+    const index = [];
+    const random = seed => {
+      const x = Math.sin(seed * 12.9898) * 43758.5453;
+      return x - Math.floor(x);
+    };
+    pages.forEach(({targets}, page) => {
+      const areas = targets.map(([u0, v0, u1, v1]) => Math.max(u1 - u0, 0) * Math.max(v1 - v0, 0));
+      const total = areas.reduce((sum, a) => sum + a, 0);
+      if ( !total ) return;
+      for ( let k = 0; k < SIGN_RAYS; k++ ) {
+        const seed = (page * 997) + (k * 7.31) + 1;
+        let pick = random(seed) * total;
+        const box = targets.find((_, i) => (pick -= areas[i]) <= 0) ?? targets.at(-1);
+        const u = box[0] + (random(seed + 0.1) * (box[2] - box[0]));
+        const v = box[1] + (random(seed + 0.2) * (box[3] - box[1]));
+        const to = this.#surfacePosition(u, v);
+        const from = {x: ((u * 2) - 1) * sign.lensHalf * 0.85, y: sign.base.height + 0.002, z: sign.lensZ};
+        const broad = (k % 3) === 0;
+        const near = broad ? 0.004 : 0.0015;
+        const far = broad ? 0.03 + (random(seed + 0.3) * 0.05) : 0.003 + (random(seed + 0.3) * 0.008);
+        const n = positions.length / 3;
+        positions.push(from.x - near, from.y, from.z, from.x + near, from.y, from.z, to.x + far, to.y, to.z, to.x - far, to.y, to.z);
+        const own = random(seed + 0.4) + (broad ? 1 : 0);
+        coords.push(0, 0, own, page, 1, 0, own, page, 1, 1, own, page, 0, 1, own, page);
+        index.push(n, n + 1, n + 2, n, n + 2, n + 3);
+      }
+    });
+    const geometry = sign.rayMesh.geometry;
+    geometry.getBuffer("aVertexPosition").update(new Float32Array(positions));
+    geometry.getBuffer("aTextureCoord").update(new Float32Array(coords));
+    geometry.getIndex().update(new (positions.length / 3 > 65535 ? Uint32Array : Uint16Array)(index));
   }
 
   #destroySign() {
@@ -1423,8 +1529,9 @@ export default class HoloRenderer {
     this.#sign = null;
     this.panelMesh.shader = this.panelShader;
     if ( !sign?.geometries ) return;
-    for ( const mesh of [sign.floorMesh, sign.baseMesh, sign.beamMesh] ) mesh.destroy();
-    destroyGeometries(...sign.geometries);
+    const rayGeometry = sign.rayMesh.geometry;
+    for ( const mesh of [sign.floorMesh, sign.baseMesh, sign.beamMesh, sign.rayMesh] ) mesh.destroy();
+    destroyGeometries(...sign.geometries, rayGeometry);
   }
 
   #destroyTerrain() {
@@ -1541,14 +1648,24 @@ export default class HoloRenderer {
     panel.uScroll = Math.max(SIGN_SCROLLS.indexOf(text.scroll), 0);
     this.#showPages(panel, seconds);
     this.panelMesh.visible = power > 0.3;
-    sign.beamMesh.visible = beam > 0;
-    const light = sign.beamMesh.shader.uniforms;
-    light.uOpacity = opacity * beam;
-    light.uFlicker = this.#flicker;
-    light.uPhase = (seconds / 8) % 1;
+    // A panel is lit by a cone of light to its edges; without one, rays go to what is on it.
+    const bare = text.panel === "none";
+    sign.beamMesh.visible = (beam > 0) && !bare;
+    sign.rayMesh.visible = (beam > 0) && bare;
+    const pages = this.#textPanel?.pages ?? [];
+    if ( bare && (sign.rayPages !== pages) ) this.#aimRays(pages);
+    for ( const mesh of [sign.beamMesh, sign.rayMesh] ) {
+      const light = mesh.shader.uniforms;
+      light.uOpacity = opacity * beam;
+      light.uFlicker = this.#flicker;
+      light.uPhase = (seconds / 8) % 1;
+    }
+    const shown = Math.floor(panel.uPages[1]);
+    sign.rayMesh.shader.uniforms.uPages.set([shown, (shown + 1) % Math.max(pages.length, 1), panel.uChange]);
     const floor = sign.floorMesh.shader.uniforms;
     floor.uOpacity = opacity * beam;
     floor.uFlicker = this.#flicker;
+    floor.uUnder = bare ? 0 : 1;
     const base = sign.baseMesh.shader.uniforms;
     base.uLensGlow = (0.1 + (0.9 * beam)) * (beam > 0 ? this.#flicker : 1);
     base.uPower = beam;
