@@ -90,6 +90,21 @@
   {{#if isText}}
   <fieldset>
     <legend>{{localize "VIRAHOLO.Mode.text"}}</legend>
+    <div class="form-group">
+      <label for="{{partId}}-source">{{localize "VIRAHOLO.Config.text.source"}}</label>
+      <div class="form-fields">
+        <select id="{{partId}}-source" name="{{flags}}.text.source">{{selectOptions signSources selected=holo.text.source}}</select>
+      </div>
+    </div>
+    {{#if fromJournal}}
+    <div class="form-group">
+      <label for="{{partId}}-journal">{{localize "VIRAHOLO.Config.text.journal"}}</label>
+      <div class="form-fields">
+        <input type="text" id="{{partId}}-journal" name="{{flags}}.text.journal" value="{{holo.text.journal}}" placeholder="JournalEntry.…">
+      </div>
+      <p class="hint">{{#if journalName}}<strong>{{journalName}}</strong> — {{/if}}{{localize "VIRAHOLO.Config.text.journalHint"}}</p>
+    </div>
+    {{else}}
     <div class="form-group stacked">
       <label for="{{partId}}-content">{{localize "VIRAHOLO.Config.text.content"}}</label>
       <textarea id="{{partId}}-content" name="{{flags}}.text.content" rows="6">{{holo.text.content}}</textarea>
@@ -98,6 +113,7 @@
         <i class="fa-solid fa-image" inert></i> {{localize "VIRAHOLO.Config.text.insertImage"}}
       </button>
     </div>
+    {{/if}}
     <div class="form-group">
       <label for="{{partId}}-font">{{localize "VIRAHOLO.Config.text.font"}}</label>
       <div class="form-fields">
@@ -152,12 +168,29 @@
       </div>
     </div>
     <div class="form-group">
+      <label for="{{partId}}-paging">{{localize "VIRAHOLO.Config.text.paging"}}</label>
+      <div class="form-fields">
+        <select id="{{partId}}-paging" name="{{flags}}.text.paging">{{selectOptions signPagings selected=holo.text.paging}}</select>
+      </div>
+      <p class="hint">{{localize "VIRAHOLO.Config.text.pagingHint"}}</p>
+    </div>
+    {{#if manualPaging}}
+    <div class="form-group">
+      <label for="{{partId}}-flip-all">{{localize "VIRAHOLO.Config.text.flipAll"}}</label>
+      <div class="form-fields">
+        <input type="checkbox" id="{{partId}}-flip-all" name="{{flags}}.text.flipAll" {{checked holo.text.flipAll}}>
+      </div>
+      <p class="hint">{{localize "VIRAHOLO.Config.text.flipAllHint"}}</p>
+    </div>
+    {{else}}
+    <div class="form-group">
       <label for="{{partId}}-interval">{{localize "VIRAHOLO.Config.text.interval"}}</label>
       <div class="form-fields">
         <input type="number" id="{{partId}}-interval" name="{{flags}}.text.interval" value="{{holo.text.interval}}" min="2" max="600" step="1">
       </div>
       <p class="hint">{{localize "VIRAHOLO.Config.text.intervalHint"}}</p>
     </div>
+    {{/if}}
   </fieldset>
   {{/if}}
 </section>

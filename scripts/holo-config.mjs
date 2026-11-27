@@ -1,4 +1,5 @@
-import {DISPLAY_MODES, OFF_STYLES, SIGN_BASES, SIGN_PANELS, SIGN_SCROLLS, SIGN_TILT_RANGE, allowedDisplays, LINK_SECTIONS, MODULE_ID, UNITS, defaultCamera, deletionUpdate, getHoloData,
+import {DISPLAY_MODES, OFF_STYLES, SIGN_BASES, SIGN_PAGINGS, SIGN_PANELS, SIGN_SCROLLS, SIGN_SOURCES, SIGN_TILT_RANGE,
+  allowedDisplays, LINK_SECTIONS, MODULE_ID, UNITS, defaultCamera, deletionUpdate, getHoloData,
   getStateJournal} from "./data.mjs";
 import * as history from "./history.mjs";
 import {createLink, joinLink, leaveLink, linkChoices, writeHolo} from "./links.mjs";
@@ -145,6 +146,11 @@ export default class HoloConfig extends HandlebarsApplicationMixin(DocumentSheet
       signPanels: Object.fromEntries(SIGN_PANELS.map(s => [s, localize(`VIRAHOLO.SignPanel.${s}`)])),
       signBases: Object.fromEntries(SIGN_BASES.map(s => [s, localize(`VIRAHOLO.SignBase.${s}`)])),
       signScrolls: Object.fromEntries(SIGN_SCROLLS.map(s => [s, localize(`VIRAHOLO.SignScroll.${s}`)])),
+      signPagings: Object.fromEntries(SIGN_PAGINGS.map(s => [s, localize(`VIRAHOLO.SignPaging.${s}`)])),
+      signSources: Object.fromEntries(SIGN_SOURCES.map(s => [s, localize(`VIRAHOLO.SignSource.${s}`)])),
+      manualPaging: holo.text.paging === "manual",
+      fromJournal: holo.text.source === "journal",
+      journalName: journalLabel(holo.text.journal),
       lookSliders: sliders("look"),
       terrainSliders: sliders("terrain"),
       displayModes: Object.fromEntries(allowedDisplays(holo.terrain).map(m => [m, localize(`VIRAHOLO.Display.${m}`)])),
@@ -160,6 +166,24 @@ export default class HoloConfig extends HandlebarsApplicationMixin(DocumentSheet
       units: Object.fromEntries(Object.keys(UNITS).map(u => [u, localize(`VIRAHOLO.Units.${u}`)])),
       axes: {width: localize("VIRAHOLO.Config.scale.width"), height: localize("VIRAHOLO.Config.scale.height")},
       players: game.users.filter(u => !u.isGM).map(u => ({id: u.id, name: u.name, owner: holo.owners.includes(u.id)}))
+    });
+  }
+
+  /** @override */
+  _onRender(context, options) {
+    super._onRender(context, options);
+    // Journal entries and pages can be dropped on the sign's journal field.
+    const input = this.element.querySelector(`input[name="flags.${MODULE_ID}.text.journal"]`);
+    if ( !input || input.dataset.dropReady ) return;
+    input.dataset.dropReady = "true";
+    input.addEventListener("dragover", event => event.preventDefault());
+    input.addEventListener("drop", event => {
+      event.preventDefault();
+      const Editor = foundry.applications.ux?.TextEditor?.implementation ?? TextEditor;
+      const data = Editor.getDragEventData(event);
+      if ( !["JournalEntry", "JournalEntryPage"].includes(data?.type) || !data.uuid ) return;
+      input.value = data.uuid;
+      input.dispatchEvent(new Event("change", {bubbles: true}));
     });
   }
 
@@ -297,6 +321,14 @@ export default class HoloConfig extends HandlebarsApplicationMixin(DocumentSheet
     const {mode} = getHoloData(this.document);
     await this.document.update({[`flags.${MODULE_ID}.camera`]: defaultCamera(mode)});
   }
+}
+
+/** "Entry" or "Entry: Page" for a journal entry or page UUID, or null. */
+function journalLabel(uuid) {
+  const doc = uuid ? fromUuidSync(uuid, {strict: false}) : null;
+  if ( doc?.documentName === "JournalEntry" ) return doc.name;
+  if ( doc?.documentName === "JournalEntryPage" ) return `${doc.parent.name}: ${doc.name}`;
+  return null;
 }
 
 /** Ways to open the settings: a button in the Tile HUD and in the Tile config header (GMs only). */

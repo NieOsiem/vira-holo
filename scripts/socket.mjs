@@ -64,10 +64,12 @@ export function broadcastPreview(doc, preview) {
  * Save what a driver changed (the camera, including auto-spin, the terrain's display style, and the map travelled
  * to: a map UUID, or null for home). GMs write directly; owners ask the active GM.
  * @param {TileDocument} doc
- * @param {{camera?: object, terrain?: {display: string}, map?: string|null, powered?: boolean}} changes
+ * A sign's page may also be turned by anyone when the sign allows it (`text.flipAll`).
+ * @param {{camera?: object, terrain?: {display: string}, map?: string|null, powered?: boolean, page?: number}} changes
  */
 export function saveDriverChanges(doc, changes) {
   if ( game.user.isGM ) return writeHolo(doc, sanitize(doc, changes));
+  if ( !canDrive(game.user, doc) && !(getHoloData(doc).text.flipAll && ("page" in changes)) ) return;
   const gm = activeGM();
   if ( !gm ) return;
   game.socket.emit(EVENT, {action: "save", uuid: doc.uuid, changes}, {recipients: [gm.id]});
@@ -137,8 +139,13 @@ function sanitizePreview(preview) {
 function onSave({uuid, changes}, sender) {
   if ( game.user !== game.users.activeGM ) return;
   const doc = fromUuidSync(uuid, {strict: false});
-  if ( !doc || !canDrive(sender, doc) ) return;
-  writeHolo(doc, sanitize(doc, changes));
+  if ( !doc ) return;
+  if ( canDrive(sender, doc) ) writeHolo(doc, sanitize(doc, changes));
+  else if ( getHoloData(doc).text.flipAll && isPage(changes?.page) ) writeHolo(doc, {page: changes.page});
+}
+
+function isPage(page) {
+  return Number.isInteger(page) && (Math.abs(page) <= 1e6);
 }
 
 function onAnnotations({uuid, list, edit}, sender) {
@@ -152,9 +159,10 @@ function onAnnotations({uuid, list, edit}, sender) {
  * Only the fields a driver may change: camera numbers, a known display style, and travel to a neighbouring map
  * (the parent, a map placed on this one, or home).
  */
-function sanitize(doc, {camera, terrain, map, powered}={}) {
+function sanitize(doc, {camera, terrain, map, powered, page}={}) {
   const changes = {};
   if ( typeof powered === "boolean" ) changes.powered = powered;
+  if ( isPage(page) ) changes.page = page;
   if ( camera ) changes.camera = pickCamera(camera);
   if ( allowedDisplays(getHoloData(doc).terrain).includes(terrain?.display) ) changes.terrain = {display: terrain.display};
   const target = (map === undefined) ? undefined : travelTarget(doc, map);

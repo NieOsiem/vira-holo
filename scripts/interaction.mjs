@@ -277,6 +277,27 @@ function projectorAt(event) {
   return found;
 }
 
+/**
+ * The sign paged by hand under the pointer and where on it ({tile, holo, u}), if this user may turn its pages:
+ * drivers, or anyone when the sign allows it.
+ */
+function pageFlipAt(event) {
+  if ( !canvas?.ready || (event.target !== canvas.app.view) || canvas.tiles.active ) return null;
+  const point = canvasPoint(event);
+  let found = null;
+  for ( const [tile, holo] of getHolograms() ) {
+    const {mode, powered, text} = holo.data;
+    if ( (mode !== "text") || (text.paging !== "manual") || !powered || (holo.pageCount < 2) ) continue;
+    if ( !tile.visible || !tile.mesh?.visible ) continue;
+    if ( !text.flipAll && !canDrive(game.user, tile.document) ) continue;
+    if ( !game.user.isGM && !canvas.visibility.testVisibility(tile.center, {object: tile}) ) continue;
+    const uv = holo.surfaceAt(holo.toTexturePoint(point));
+    if ( uv && (!found || isAbove(tile, found.tile)) ) found = {tile, holo, u: uv.u};
+  }
+  if ( !found || placeableAt(event) ) return null;
+  return found;
+}
+
 function onPointerDown(event) {
   if ( (event.button !== 0) || isRingEvent(event) || isCardEvent(event) || isMeasureCardEvent(event) ) return;
   // A double click on a sign's projector switches the sign on or off.
@@ -291,6 +312,13 @@ function onPointerDown(event) {
     }
     lastClick = {tile: null, time: 0};
     return saveDriverChanges(projector.tile.document, {powered: !projector.holo.data.powered});
+  }
+  // A click on a sign paged by hand turns its page: back on its left half, on on its right half.
+  const flip = !(event.ctrlKey || event.metaKey) && pageFlipAt(event);
+  if ( flip ) {
+    swallow(event);
+    setEngaged(null);
+    return saveDriverChanges(flip.tile.document, {page: flip.holo.shownPage + ((flip.u < 0.5) ? -1 : 1)});
   }
   const hit = hologramAt(event);
   const off = !hit && hologramAt(event, false, true);

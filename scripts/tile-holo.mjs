@@ -59,6 +59,18 @@ export function registerTileHooks() {
   Hooks.on("createJournalEntry", onLinkChanged);
   Hooks.on("updateJournalEntry", onLinkChanged);
   Hooks.on("deleteJournalEntry", onLinkChanged);
+  // Signs showing the in-game time, or a journal's pages, re-read their content when those change.
+  Hooks.on("updateWorldTime", () => {
+    for ( const holo of holograms.values() ) if ( holo.showsTime ) holo.refreshText();
+  });
+  const onJournal = () => {
+    for ( const holo of holograms.values() ) {
+      if ( (holo.data.mode === "text") && (holo.data.text.source === "journal") ) holo.refreshText();
+    }
+  };
+  for ( const hook of ["updateJournalEntry", "createJournalEntryPage", "updateJournalEntryPage", "deleteJournalEntryPage"] ) {
+    Hooks.on(hook, onJournal);
+  }
   Hooks.on("drawTile", syncTile);
   Hooks.on("refreshTile", onRefreshTile);
   Hooks.on("destroyTile", tile => detach(tile, {restore: false}));

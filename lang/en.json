@@ -71,7 +71,7 @@
       },
       "text": {
         "content": "Text",
-        "contentHint": "A line with only --- starts a new page; a line like ![](path/to/image.webp) shows an image.",
+        "contentHint": "A line with only --- starts a new page; a line like ![](path/to/image.webp) shows an image; {{date}}, {{time}} and {{weekday}} show the in-game date and time.",
         "insertImage": "Insert image",
         "font": "Font",
         "defaultFont": "World default",
@@ -89,7 +89,14 @@
         "scroll": "Scrolling",
         "speed": "Scroll speed",
         "interval": "Seconds per page",
-        "intervalHint": "With several pages, how long each one is shown before the next."
+        "intervalHint": "With several pages, how long each one is shown before the next.",
+        "paging": "Paging",
+        "pagingHint": "By hand: click the sign's left or right half to turn back or on.",
+        "flipAll": "Anyone can turn pages",
+        "flipAllHint": "Otherwise only GMs and the hologram's owners can.",
+        "source": "Content from",
+        "journal": "Journal",
+        "journalHint": "Drop a journal entry (each text page is a page of the sign) or one page here. A horizontal rule also starts a new page."
       },
       "look": {
         "color": "Colour",
@@ -219,6 +226,15 @@
       "bar": "Bar",
       "puck": "Small round puck",
       "flush": "Flush with the floor"
+    },
+    "Day": "Day {day}",
+    "SignPaging": {
+      "timed": "Timed",
+      "manual": "By hand"
+    },
+    "SignSource": {
+      "text": "Text typed here",
+      "journal": "A journal"
     },
     "SignScroll": {
       "none": "None",

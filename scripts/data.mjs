@@ -21,6 +21,8 @@ export const DEFAULTS = Object.freeze({
   powered: true,
   /** What an unpowered hologram looks like (OFF_STYLES). */
   offStyle: "square",
+  /** The page a sign paged by hand shows (any integer: it wraps round the pages). Per tile, never shared. */
+  page: 0,
   /** IDs of non-GM users who may drive the hologram. */
   owners: [],
   /**
@@ -99,7 +101,13 @@ export const DEFAULTS = Object.freeze({
     scroll: "none",
     speed: 1,
     /** Seconds each page (content split by "---" lines) is shown. */
-    interval: 8
+    interval: 8,
+    /** Pages turn on a timer ("timed") or when clicked ("manual"; see `page`), by drivers or, with `flipAll`, anyone. */
+    paging: "timed",
+    flipAll: false,
+    /** Where the content comes from (SIGN_SOURCES): `content`, or the journal entry or page `journal` (a UUID). */
+    source: "text",
+    journal: ""
   }
 });
 
@@ -107,6 +115,8 @@ export const SIGN_PANELS = Object.freeze(["frame", "none", "screen"]);
 export const SIGN_BASES = Object.freeze(["bar", "puck", "flush"]);
 export const SIGN_SCROLLS = Object.freeze(["none", "up", "left"]);
 export const SIGN_TILT_RANGE = Object.freeze([15, 80]);
+export const SIGN_PAGINGS = Object.freeze(["timed", "manual"]);
+export const SIGN_SOURCES = Object.freeze(["text", "journal"]);
 
 /** Defaults that differ per mode: signs face the viewer, hold still and have no projector disc. */
 const MODE_DEFAULTS = Object.freeze({
@@ -115,7 +125,7 @@ const MODE_DEFAULTS = Object.freeze({
 
 /**
  * What a link can share, by section, and the top-level keys of the hologram data each section covers.
- * Never shared: enabled, powered, offStyle, interactive, owners and the tile's placement.
+ * Never shared: enabled, powered, offStyle, page, interactive, owners and the tile's placement.
  */
 export const LINK_SECTIONS = Object.freeze({
   content: ["mode", "image", "terrain", "text", "scale"],

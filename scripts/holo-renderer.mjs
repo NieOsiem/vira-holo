@@ -534,6 +534,7 @@ uniform vec4 uWindow;      // share of the page texture shown (u, v) and the scr
 uniform vec4 uWindow2;
 uniform float uChange;     // progress of a page change, 0 (none) to 1
 uniform vec2 uPages;       // page count, and the page shown (fractional while changing)
+uniform float uManual;     // 1: paged by hand, with arrows either side of the page dots
 uniform float uStyle;      // panel style: 0 frame, 1 none, 2 screen
 uniform float uScroll;     // 0 none, 1 up, 2 sideways
 uniform vec2 uPanelShape;  // panel extents along its plane, longer side = 1
@@ -614,6 +615,16 @@ void main() {
       float away = abs(i - uPages.y);
       float on = 1.0 - clamp(min(away, uPages.x - away), 0.0, 1.0);
       dots = (1.0 - smoothstep(-fwidth(d), fwidth(d), d)) * mix(0.3, 1.0, on);
+    }
+    if ( uManual > 0.5 ) {
+      // Chevrons either side of the dots: click the sign's left or right half to turn back or on.
+      float reach = (uPages.x * 0.5 + 1.0) * spacing;
+      vec2 q = vec2(abs(p.x) - reach, abs(p.y - 0.02));
+      vec2 a = vec2(-0.004, 0.009);
+      vec2 ba = vec2(0.009, -0.009);
+      float h = clamp(dot(q - a, ba) / dot(ba, ba), 0.0, 1.0);
+      float d = length(q - a - ba * h) - 0.0016;
+      dots = max(dots, (1.0 - smoothstep(-fwidth(d), fwidth(d), d)) * 0.9);
     }
   }
 
@@ -1061,7 +1072,7 @@ export default class HoloRenderer {
     this.signPanelShader = new PIXI.Shader(getPrograms().signPanel, this.#lookUniforms({
       uPanelShape: new Float32Array([1, 1]), uReveal: 1, uSweep: -1, uImage2: PIXI.Texture.EMPTY,
       uWindow: new Float32Array([1, 1, 0, 0]), uWindow2: new Float32Array([1, 1, 0, 0]), uChange: 0,
-      uPages: new Float32Array([1, 0]), uStyle: 0, uScroll: 0
+      uPages: new Float32Array([1, 0]), uManual: 0, uStyle: 0, uScroll: 0
     }));
     this.panelMesh = new PIXI.Mesh(this.panelGeometry, this.panelShader, this.state);
     // The off table is the panel's hologram look on a fixed top-down camera, with a drawn texture as its image.
@@ -1116,6 +1127,11 @@ export default class HoloRenderer {
   #textPanel = null;
   /** A sign's layout (see #layoutSign) and its meshes; null unless in text mode. */
   #sign = null;
+  /** Pages paged by hand: the page last fully shown, and the turn to another in progress ({from, to, start}). */
+  #settledPage = null;
+  #flip = null;
+  /** The pages shown this frame: the current one, the one rising in and how far (0..1). */
+  #pageState = {current: 0, next: 0, change: 0};
   #linkedImageSrc = null;
   #linkedImage = null;
   /** CPU copy of the heightmap: {width, height, data: Float32Array}. */
@@ -1664,8 +1680,8 @@ export default class HoloRenderer {
       light.uFlicker = this.#flicker;
       light.uPhase = (seconds / 8) % 1;
     }
-    const shown = Math.floor(panel.uPages[1]);
-    sign.rayMesh.shader.uniforms.uPages.set([shown, (shown + 1) % Math.max(pages.length, 1), panel.uChange]);
+    const {current, next, change} = this.#pageState;
+    sign.rayMesh.shader.uniforms.uPages.set([current, next, change]);
     const floor = sign.floorMesh.shader.uniforms;
     floor.uOpacity = opacity * beam;
     floor.uFlicker = this.#flicker;
@@ -1696,24 +1712,79 @@ export default class HoloRenderer {
   #showPages(panel, seconds) {
     const pages = this.#textPanel?.pages ?? [];
     const count = pages.length;
-    const interval = Math.max(Number(this.data.text.interval) || 8, 2);
-    const index = count > 1 ? Math.floor(seconds / interval) % count : 0;
-    const into = count > 1 ? seconds % interval : seconds;
-    const change = count > 1 ? Math.clamp((into - (interval - SIGN_PAGE_CHANGE_S)) / SIGN_PAGE_CHANGE_S, 0, 1) : 0;
+    const {interval: wait, paging} = this.data.text;
+    let current = 0;
+    let next = 0;
+    let change = 0;
+    let into = seconds;
+    if ( (paging === "manual") && (count > 1) ) {
+      // Paged by hand: a new page set on the tile rises in over SIGN_PAGE_CHANGE_S from when it arrives here.
+      const target = this.shownPage;
+      const now = performance.now();
+      if ( this.#flip && (this.#flip.to !== target) ) {
+        this.#settledPage = this.#flip.to;
+        this.#flip = null;
+      }
+      if ( (this.#settledPage === null) || (this.#settledPage >= count) ) this.#settledPage = target;
+      if ( !this.#flip && (this.#settledPage !== target) ) this.#flip = {from: this.#settledPage, to: target, start: now};
+      if ( this.#flip ) {
+        change = (now - this.#flip.start) / (SIGN_PAGE_CHANGE_S * 1000);
+        if ( change >= 1 ) {
+          this.#settledPage = this.#flip.to;
+          this.#flip = null;
+          change = 0;
+        }
+      }
+      current = this.#flip ? this.#flip.from : this.#settledPage;
+      next = this.#flip ? this.#flip.to : current;
+    } else if ( count > 1 ) {
+      this.#settledPage = null;
+      const interval = Math.max(Number(wait) || 8, 2);
+      current = Math.floor(seconds / interval) % count;
+      next = (current + 1) % count;
+      into = seconds % interval;
+      change = Math.clamp((into - (interval - SIGN_PAGE_CHANGE_S)) / SIGN_PAGE_CHANGE_S, 0, 1);
+    }
+    this.#pageState = {current, next, change};
     const window = (uniform, page, time) => {
       if ( !page ) return uniform.set([1, 1, 0, 0]);
       const [u, v] = page.window;
       const [ru, rv] = page.rate;
       uniform.set([u, v, (ru * time) % 1, (rv * time) % 1]);
     };
-    const current = pages[index];
-    const next = pages[(index + 1) % count];
-    panel.uImage = current?.texture ?? PIXI.Texture.EMPTY;
-    window(panel.uWindow, current, into);
-    panel.uImage2 = (change > 0) ? next.texture : PIXI.Texture.EMPTY;
-    window(panel.uWindow2, (change > 0) ? next : null, 0);
+    panel.uImage = pages[current]?.texture ?? PIXI.Texture.EMPTY;
+    window(panel.uWindow, pages[current], into);
+    panel.uImage2 = (change > 0) ? pages[next].texture : PIXI.Texture.EMPTY;
+    window(panel.uWindow2, (change > 0) ? pages[next] : null, 0);
     panel.uChange = change;
-    panel.uPages.set([count, index + change]);
+    // The lit dot slides from page to page the short way round.
+    const step = (((next - current) % count) + count + (count / 2)) % count - (count / 2);
+    panel.uPages.set([count, (((current + (step * change)) % count) + count) % count]);
+    panel.uManual = ((paging === "manual") && (count > 1)) ? 1 : 0;
+  }
+
+  /** Re-read a sign's content (its journal changed, or the in-game time it shows); it re-renders only on a change. */
+  refreshText() {
+    if ( this.#textPanel ) this.#updateTextPanel();
+  }
+
+  /** Whether the sign shows the in-game date or time. */
+  get showsTime() {
+    return !!this.#textPanel?.usesTime;
+  }
+
+  /** How many pages the sign shows (0 before they are rendered, or not a sign). */
+  get pageCount() {
+    return this.#textPanel?.pages.length ?? 0;
+  }
+
+  /** The page a sign shows (or is turning to): by the clock, or the tile's `page` when paged by hand. */
+  get shownPage() {
+    const count = this.pageCount;
+    if ( count < 2 ) return 0;
+    if ( this.data.text.paging === "manual" ) return (((Math.trunc(this.data.page) || 0) % count) + count) % count;
+    const interval = Math.max(Number(this.data.text.interval) || 8, 2);
+    return Math.floor((game.time.serverTime / 1000) / interval) % count;
   }
 
   /**
