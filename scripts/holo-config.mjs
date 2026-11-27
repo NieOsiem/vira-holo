@@ -1,4 +1,4 @@
-import {DISPLAY_MODES, OFF_STYLES, allowedDisplays, LINK_SECTIONS, MODULE_ID, UNITS, defaultCamera, deletionUpdate, getHoloData,
+import {DISPLAY_MODES, OFF_STYLES, SIGN_BASES, SIGN_PANELS, SIGN_SCROLLS, SIGN_TILT_RANGE, allowedDisplays, LINK_SECTIONS, MODULE_ID, UNITS, defaultCamera, deletionUpdate, getHoloData,
   getStateJournal} from "./data.mjs";
 import * as history from "./history.mjs";
 import {createLink, joinLink, leaveLink, linkChoices, writeHolo} from "./links.mjs";
@@ -50,6 +50,7 @@ export default class HoloConfig extends HandlebarsApplicationMixin(DocumentSheet
     form: {submitOnChange: true, closeOnSubmit: false},
     actions: {
       resetView: HoloConfig.#onResetView,
+      insertImage: HoloConfig.#onInsertImage,
       clearMarkers: HoloConfig.#onClearMarkers,
       clearStrokes: HoloConfig.#onClearStrokes,
       clearMeasures: HoloConfig.#onClearMeasures,
@@ -140,6 +141,10 @@ export default class HoloConfig extends HandlebarsApplicationMixin(DocumentSheet
       modes: Object.fromEntries(["image", "terrain", "text"].map(m => [m, localize(`VIRAHOLO.Mode.${m}`)])),
       fonts: {"": localize("VIRAHOLO.Config.text.defaultFont"), ...Fonts.getAvailableFontChoices()},
       aligns: Object.fromEntries(["left", "center", "right"].map(a => [a, localize(`VIRAHOLO.Config.text.${a}`)])),
+      tiltRange: SIGN_TILT_RANGE,
+      signPanels: Object.fromEntries(SIGN_PANELS.map(s => [s, localize(`VIRAHOLO.SignPanel.${s}`)])),
+      signBases: Object.fromEntries(SIGN_BASES.map(s => [s, localize(`VIRAHOLO.SignBase.${s}`)])),
+      signScrolls: Object.fromEntries(SIGN_SCROLLS.map(s => [s, localize(`VIRAHOLO.SignScroll.${s}`)])),
       lookSliders: sliders("look"),
       terrainSliders: sliders("terrain"),
       displayModes: Object.fromEntries(allowedDisplays(holo.terrain).map(m => [m, localize(`VIRAHOLO.Display.${m}`)])),
@@ -268,6 +273,24 @@ export default class HoloConfig extends HandlebarsApplicationMixin(DocumentSheet
     });
     if ( !confirmed ) return;
     history.edit(this.document, "measures", {type: "clear"}, getHoloData(this.document).annotations.measures);
+  }
+
+  /** Pick an image and put a line showing it at the text cursor (on a line of its own). */
+  static #onInsertImage() {
+    const textarea = this.element.querySelector(`textarea[name="flags.${MODULE_ID}.text.content"]`);
+    if ( !textarea ) return;
+    const Picker = foundry.applications.apps?.FilePicker?.implementation ?? FilePicker;
+    new Picker({
+      type: "image",
+      callback: path => {
+        const {value, selectionStart: at} = textarea;
+        const before = value.slice(0, at);
+        const after = value.slice(at);
+        const line = `![](${path.replaceAll(" ", "%20")})`;
+        textarea.value = `${before}${(before && !before.endsWith("\n")) ? "\n" : ""}${line}${after.startsWith("\n") ? "" : "\n"}${after}`;
+        textarea.dispatchEvent(new Event("change", {bubbles: true}));
+      }
+    }).render(true);
   }
 
   static async #onResetView() {

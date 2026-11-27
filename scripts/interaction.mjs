@@ -259,8 +259,39 @@ function placeableAt(event) {
   return null;
 }
 
+/**
+ * The sign whose projector is under the pointer, if this user may switch it (interactive or not: signs usually
+ * aren't, and their projector is the only way to switch them from the canvas).
+ */
+function projectorAt(event) {
+  if ( !canvas?.ready || (event.target !== canvas.app.view) || canvas.tiles.active ) return null;
+  const point = canvasPoint(event);
+  let found = null;
+  for ( const [tile, holo] of getHolograms() ) {
+    if ( (holo.data.mode !== "text") || !tile.visible || !tile.mesh?.visible ) continue;
+    if ( !canDrive(game.user, tile.document) || !holo.projectorAt(holo.toTexturePoint(point)) ) continue;
+    if ( !game.user.isGM && !canvas.visibility.testVisibility(tile.center, {object: tile}) ) continue;
+    if ( !found || isAbove(tile, found.tile) ) found = {tile, holo};
+  }
+  if ( !found || placeableAt(event) ) return null;
+  return found;
+}
+
 function onPointerDown(event) {
   if ( (event.button !== 0) || isRingEvent(event) || isCardEvent(event) || isMeasureCardEvent(event) ) return;
+  // A double click on a sign's projector switches the sign on or off.
+  const projector = !(event.ctrlKey || event.metaKey) && projectorAt(event);
+  if ( projector ) {
+    swallow(event);
+    setEngaged(null);
+    const now = performance.now();
+    if ( (lastClick.tile !== projector.tile) || (now - lastClick.time >= DOUBLE_CLICK_MS) ) {
+      lastClick = {tile: projector.tile, time: now};
+      return;
+    }
+    lastClick = {tile: null, time: 0};
+    return saveDriverChanges(projector.tile.document, {powered: !projector.holo.data.powered});
+  }
   const hit = hologramAt(event);
   const off = !hit && hologramAt(event, false, true);
   if ( off && off.holo.powerSpotAt(off.holo.toTexturePoint(canvasPoint(event))) ) {

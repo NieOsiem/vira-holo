@@ -1,4 +1,4 @@
-import {MEASURE_INK, effectiveDisplay, UNITS, formatDistance, getHoloData} from "./data.mjs";
+import {MEASURE_INK, SIGN_PANELS, SIGN_SCROLLS, SIGN_TILT_RANGE, effectiveDisplay, UNITS, formatDistance, getHoloData} from "./data.mjs";
 import MarkerLayer from "./marker-layer.mjs";
 import MeasureLayer from "./measure-layer.mjs";
 import StrokeLayer from "./stroke-layer.mjs";
@@ -76,6 +76,30 @@ const MAX_PINGS = 12;
 const RECENTER_MS = 1100;
 /** Content scale a travel starts from: a map entered grows into view, a parent shrinks into it. */
 const TRAVEL_SCALE = {in: 0.3, out: 2.5};
+/** Height of a sign panel's foot above the floor, in object units. */
+const SIGN_FOOT = 0.17;
+/**
+ * How much bigger a sign's top edge looks than its foot from the default camera when it leans back 60°: the
+ * perspective that stands it up. This sets the panel's length up its plane, which other tilts keep.
+ */
+const SIGN_PERSPECTIVE = 1.22;
+/**
+ * Sign projectors (`text.base`), in object units: top height, half width (from the panel's half width) and half
+ * depth, corner radius, lens distance in front of the panel's foot, lens offset from the centre (towards the panel),
+ * lens half width (from the projector's half width), shadow strength, and the style number the shaders know it by.
+ */
+const SIGN_BASES = Object.freeze({
+  bar: {height: 0.045, width: hx => Math.min(Math.max(hx * 0.55, 0.16), hx * 0.95), depth: 0.08, radius: 0.03,
+    lens: 0.17, lensOffset: 0.025, lensWidth: w => w - 0.055, shadow: 1, style: 0},
+  puck: {height: 0.04, width: hx => Math.min(0.065, hx * 0.95), depth: 0.065, radius: 0.065,
+    lens: 0.16, lensOffset: 0, lensWidth: () => 0.004, shadow: 1, style: 1},
+  flush: {height: 0.001, width: hx => Math.min(Math.max(hx * 0.5, 0.12), hx * 0.95), depth: 0.03, radius: 0.03,
+    lens: 0.15, lensOffset: 0, lensWidth: w => w - 0.06, shadow: 0, style: 2}
+});
+/** How long pages take to change. */
+const SIGN_PAGE_CHANGE_S = 0.9;
+/** One scanline per this many scene pixels along a sign's panel. */
+const SIGN_SCANLINE_SPACING = 9;
 /** Most data motes, at full density. */
 const MAX_MOTES = 160;
 /** Mote animation repeats every this many seconds; each mote rises a whole number of times per period. */
@@ -154,8 +178,12 @@ vec3 holoTint(vec4 tex, float shade) {
   return mix(rgb, uColor * (0.1 + 1.4 * luminance(rgb)), uTint) * shade;
 }
 
+// Scanlines run across the screen unless a shader defines SCAN_Y first (signs run them along their tilted plane).
+#ifndef SCAN_Y
+#define SCAN_Y (holoPixel().y * uScanDensity)
+#endif
 float scanline() {
-  return 1.0 - uScan * 0.6 * (0.5 + 0.5 * sin((holoPixel().y * uScanDensity + uScanPhase) * 6.2831853));
+  return 1.0 - uScan * 0.6 * (0.5 + 0.5 * sin((SCAN_Y + uScanPhase) * 6.2831853));
 }
 
 // Returns premultiplied emitted colour (rgb) and its alpha (a) before solidity.
@@ -461,6 +489,272 @@ void main() {
   gl_FragColor = vec4(mix(uColor, vec3(1.0), 0.45) * a, a * 0.2);
 }`;
 
+/*
+ * Signs (text mode): a physical projector base on the floor, a fan of light rising from its lens, and the text on a
+ * panel leaning back above it. The base, the floor under it and the beam get a vec3 aTextureCoord of their own.
+ */
+const SIGN_PART_VERTEX = `#version 300 es
+precision highp float;
+in vec3 aVertexPosition;
+in vec3 aTextureCoord;
+${CAMERA_UNIFORMS}
+out vec3 vPart;
+out float vDepth;
+${PROJECT}
+void main() {
+  vPart = aTextureCoord;
+  gl_Position = project(aVertexPosition);
+}`;
+
+const SDF = `
+float roundedBox(vec2 p, vec2 size, float radius) {
+  vec2 q = abs(p) - size + radius;
+  return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - radius;
+}
+// 1 within width of d = 0, fading over about a device pixel.
+float hairline(float d, float width) {
+  return 1.0 - smoothstep(width, width + 1.5 * fwidth(d), abs(d));
+}`;
+
+const SIGN_PANEL_FRAGMENT = `#version 300 es
+precision highp float;
+in vec2 vUV;
+in float vDepth;
+#define SCAN_Y (vUV.y * uScanDensity)
+${HOLO_LOOK}
+${SDF}
+uniform sampler2D uImage2; // the next page, while pages change
+uniform vec4 uWindow;      // share of the page texture shown (u, v) and the scroll offset (u, v)
+uniform vec4 uWindow2;
+uniform float uChange;     // progress of a page change, 0 (none) to 1
+uniform vec2 uPages;       // page count, and the page shown (fractional while changing)
+uniform float uStyle;      // panel style: 0 frame, 1 none, 2 screen
+uniform float uScroll;     // 0 none, 1 up, 2 sideways
+uniform vec2 uPanelShape;  // panel extents along its plane, longer side = 1
+uniform float uReveal;     // how far up from its foot the panel has materialised (switching on)
+uniform float uSweep;      // height of the bright band sweeping up the panel (outside 0..1: none)
+out vec4 fragColor;
+
+vec4 page(sampler2D image, vec4 window) {
+  vec2 uv = window.zw + vUV * window.xy;
+  if ( uScroll > 1.5 ) uv.x = fract(uv.x);
+  else if ( uScroll > 0.5 ) uv.y = fract(uv.y);
+  return texture(image, uv);
+}
+
+float hash(float n) {
+  return fract(sin(n * 12.9898) * 43758.5453);
+}
+
+void main() {
+  float up = 1.0 - vUV.y;
+  float reach = uReveal * 1.1;
+  float shown = 1.0 - smoothstep(reach - 0.08, reach, up);
+  vec4 tex = page(uImage, uWindow);
+  // The next page rises from the foot in ragged bands of rows, behind a bright edge.
+  float changing = 0.0;
+  if ( uChange > 0.0 ) {
+    float rows = floor(vUV.y * 36.0);
+    float line = up + (hash(rows) - 0.5) * 0.14;
+    float front = uChange * 1.3 - 0.15;
+    tex = mix(tex, page(uImage2, uWindow2), step(line, front));
+    changing = exp(-pow((line - front) * 22.0, 2.0));
+  }
+  // Scrolling content fades in and out at the panel's edges.
+  if ( uScroll > 0.5 ) {
+    float along = (uScroll > 1.5) ? vUV.x : vUV.y;
+    tex *= smoothstep(0.0, 0.07, along) * smoothstep(0.0, 0.07, 1.0 - along);
+  }
+  vec4 holo = holoColor(tex, 1.0) * depthFade(vDepth, 0.85);
+
+  vec2 edge = min(vUV, 1.0 - vUV) * uPanelShape;
+  float lit = exp(-up * 4.0); // most light where the beam reaches the panel
+  float foot = exp(-up * uPanelShape.y * 60.0);
+  float frame = 0.0;
+  float bracket = 0.0;
+  float fill = 0.0;
+  float clip = 1.0;
+  if ( uStyle < 0.5 ) {
+    frame = hairline(min(edge.x, edge.y), 0.0);
+    float arm = 0.07;
+    bracket = max(hairline(edge.x, 0.005) * step(edge.y, arm), hairline(edge.y, 0.005) * step(edge.x, arm));
+    fill = 0.035 + 0.1 * lit;
+  } else if ( uStyle > 1.5 ) {
+    // A screen: a solid, rounded pane with a bright border.
+    float d = roundedBox((vUV - 0.5) * uPanelShape, uPanelShape * 0.5, 0.03);
+    clip = 1.0 - smoothstep(-fwidth(d), fwidth(d), d);
+    frame = hairline(d + 0.006, 0.003) * 1.3;
+    fill = 0.26 + 0.08 * lit;
+    foot *= 0.4;
+  } else {
+    foot = 0.0;
+  }
+  fill *= scanline();
+
+  // One dot per page along the foot, the one shown lit.
+  float dots = 0.0;
+  if ( uPages.x > 1.5 ) {
+    const float spacing = 0.032;
+    vec2 p = vec2((vUV.x - 0.5) * uPanelShape.x, up * uPanelShape.y);
+    float i = floor(p.x / spacing + uPages.x * 0.5);
+    if ( (i >= 0.0) && (i < uPages.x) ) {
+      float d = length(p - vec2((i + 0.5 - uPages.x * 0.5) * spacing, 0.02)) - 0.0065;
+      float away = abs(i - uPages.y);
+      float on = 1.0 - clamp(min(away, uPages.x - away), 0.0, 1.0);
+      dots = (1.0 - smoothstep(-fwidth(d), fwidth(d), d)) * mix(0.3, 1.0, on);
+    }
+  }
+
+  float band = exp(-pow((up - uSweep) * 12.0, 2.0));
+  float pane = (uStyle > 0.5 && uStyle < 1.5) ? 0.0 : 1.0;
+  float glow = uOpacity * uFlicker;
+  vec3 rgb = holo.rgb * (1.0 + band * 0.8) + uColor * glow * (fill * 0.6 + frame * 0.6 + bracket + band * 0.07 * pane
+    + foot * 0.5 + dots * 0.9 + changing * 0.6);
+  float a = holo.a * uSolidity + glow * (fill * 0.5 + frame * 0.2 + bracket * 0.35 + band * 0.03 * pane + dots * 0.3);
+  // While materialising, a bright edge runs up the panel ahead of what is shown.
+  float front = exp(-pow((up - reach + 0.04) * 28.0, 2.0)) * smoothstep(0.0, 0.05, uReveal) * (1.0 - step(1.0, uReveal));
+  fragColor = (vec4(rgb, a) * shown * clip + vec4(uColor * front * glow * 1.4, front * glow * 0.2)) * volumeFade();
+}`;
+
+const SIGN_BEAM_FRAGMENT = `#version 300 es
+precision highp float;
+in vec3 vPart; // across the face (0..1), from the lens (0) to the panel (1), the face's strength
+uniform vec3 uColor;
+uniform float uOpacity;
+uniform float uFlicker;
+uniform float uPhase; // 0..1, wrapping
+${VOLUME}
+out vec4 fragColor;
+
+void main() {
+  float s = vPart.x;
+  float t = vPart.y;
+  float fall = pow(1.0 - t, 1.5);
+  float rays = 0.6 + 0.4 * sin(s * 61.0 + 2.0 * sin(s * 13.0 + uPhase * 6.2831853));
+  float edges = smoothstep(0.82, 1.0, abs(s * 2.0 - 1.0));
+  // Pulses of light travelling up from the lens to the panel.
+  float pulse = exp(-pow((t - fract(uPhase * 4.0)) * 9.0, 2.0)) + exp(-pow((t - fract(uPhase * 4.0 + 0.5)) * 9.0, 2.0));
+  float a = vPart.z * (fall * (0.75 * rays + 0.8 * edges) + 0.06 + 0.35 * pulse * (1.0 - t) * rays);
+  // It leaves the lens softly (the lens's own glow covers the start), so it doesn't light the projector in a hard band.
+  a *= smoothstep(0.0, 0.12, t) * uOpacity * uFlicker * volumeFade();
+  fragColor = vec4(uColor * a, 0.0); // Light only: it brightens what's behind it
+}`;
+
+const SIGN_FLOOR_FRAGMENT = `#version 300 es
+precision highp float;
+in vec3 vPart; // floor position (x, z)
+uniform vec3 uColor;
+uniform float uOpacity; // of the light; the shadow is the projector's own
+uniform float uFlicker;
+uniform vec4 uBase;     // projector centre (x, z) and half size
+uniform float uRadius;  // projector corner radius
+uniform float uShadow;  // projector shadow strength (none when flush with the floor)
+uniform vec4 uPanel;    // panel half width, foot z, top z, lens z
+uniform float uLens;    // lens half width
+${SDF}
+${VOLUME}
+out vec4 fragColor;
+
+void main() {
+  vec2 p = vPart.xy;
+  float dBase = roundedBox(p - uBase.xy, uBase.zw, uRadius);
+  float shadow = uShadow * (0.45 * (1.0 - smoothstep(-0.01, 0.035, dBase)) + 0.12 * (1.0 - smoothstep(0.0, 0.1, dBase)));
+  float zHalf = (uPanel.z - uPanel.y) * 0.5;
+  float dPanel = roundedBox(p - vec2(0.0, uPanel.y + zHalf), vec2(uPanel.x, zHalf), 0.04);
+  float under = (1.0 - smoothstep(-0.15, 0.12, dPanel)) * mix(1.0, 0.3, clamp((p.y - uPanel.y) / (2.0 * zHalf), 0.0, 1.0));
+  // The beam lights the floor between the lens and the panel, fading in past the lens.
+  float dLens = length(vec2(max(abs(p.x) - uLens, 0.0), p.y - uPanel.w));
+  float spill = exp(-dLens * 12.0) * smoothstep(uPanel.w - 0.02, uPanel.w + 0.08, p.y);
+  float light = (0.09 * under + 0.16 * spill) * uOpacity * uFlicker;
+  fragColor = vec4(uColor * light, shadow) * volumeFade();
+}`;
+
+const SIGN_BASE_FRAGMENT = `#version 300 es
+precision highp float;
+in vec3 vPart; // position on the projector's top from its centre (x, z towards the panel)
+uniform vec3 uColor;
+uniform vec2 uSize;      // half size
+uniform float uRadius;   // corner radius
+uniform float uStyle;    // 0 bar, 1 puck, 2 flush with the floor
+uniform vec2 uLensAt;    // lens z (from the centre) and half width
+uniform float uLensGlow; // 0 (off) to 1, flicker included
+uniform float uPower;    // 0 (off) to 1
+uniform float uPhase;    // 0..1, wrapping every 12 s
+${SDF}
+${VOLUME}
+out vec4 fragColor;
+
+float body(vec2 p) {
+  return roundedBox(p, uSize, uRadius);
+}
+float spot(vec2 p, vec2 at, float r) {
+  float d = length(p - at) - r;
+  return 1.0 - smoothstep(-fwidth(d), fwidth(d), d);
+}
+
+void main() {
+  vec2 p = vPart.xy;
+  float d = body(p);
+  float aa = fwidth(d);
+  float inside = 1.0 - smoothstep(-aa, aa, d);
+  if ( inside <= 0.0 ) discard;
+  const float e = 0.003;
+  vec2 normal = normalize(vec2(body(p + vec2(e, 0.0)) - body(p - vec2(e, 0.0)), body(p + vec2(0.0, e)) - body(p - vec2(0.0, e))) + 1e-6);
+  float lit = dot(normal, normalize(vec2(-0.55, 0.85))); // light from the top left, as in most maps
+  float depth = -d;
+  bool flush = uStyle > 1.5;
+
+  // Dark gunmetal, a little lighter towards the back, with a lit bevel, a rim and an inset panel line. Flush with
+  // the floor it is only a trim with a sunken edge.
+  vec3 rgb = vec3(0.115, 0.125, 0.15) * (0.92 + 0.14 * (p.y / uSize.y));
+  if ( flush ) rgb += (1.0 - smoothstep(0.0, 2.0 * aa + 0.002, depth)) * (0.1 - 0.12 * lit);
+  else {
+    rgb += (1.0 - smoothstep(0.0, 0.02, depth)) * lit * 0.16;
+    rgb += (1.0 - smoothstep(0.0, 2.0 * aa + 0.002, depth)) * max(lit, 0.0) * 0.22;
+    rgb *= 1.0 - 0.5 * hairline(depth - 0.016, 0.0015);
+  }
+
+  // Vents at the front left of the bar.
+  if ( uStyle < 0.5 ) {
+    vec2 v = p - vec2(-uSize.x + 0.075, -uSize.y + 0.04);
+    float vents = step(abs(v.y), 0.012) * step(abs(v.x), 0.045) * (1.0 - smoothstep(0.25, 0.45, abs(fract(v.x / 0.016) - 0.5)));
+    rgb *= 1.0 - 0.55 * vents;
+  }
+
+  // The lens: a dark slot with a glowing core that lights the metal around it.
+  vec2 l = p - vec2(0.0, uLensAt.x);
+  float slot = roundedBox(l, vec2(uLensAt.y, 0.016), 0.016);
+  float slotAA = fwidth(slot);
+  rgb = mix(rgb, vec3(0.025, 0.03, 0.035), 1.0 - smoothstep(-slotAA, slotAA, slot - 0.007));
+  rgb += uColor * 0.1 * (1.0 - smoothstep(-slotAA, slotAA, abs(slot - 0.007) - 0.0015)); // the slot's bright lip
+  float core = 1.0 - smoothstep(-slotAA, slotAA, slot);
+  float hot = exp(-length(vec2(max(abs(l.x) - uLensAt.y + 0.02, 0.0), l.y)) * 150.0);
+  rgb += uColor * uLensGlow * (core * (0.55 + 1.3 * hot) + exp(-max(slot, 0.0) * 55.0) * 0.28);
+
+  // Status lights: steady and blinking in the hologram colour, or a slow red standby.
+  vec3 standby = vec3(1.0, 0.16, 0.1) * (0.7 + 0.3 * sin(uPhase * 6.2831853 * 6.0));
+  vec3 on = uColor * 1.4;
+  float blink = step(0.35, fract(uPhase * 21.0));
+  if ( uStyle > 0.5 && uStyle < 1.5 ) {
+    // The puck: a ring of lights round the lens, chasing when on.
+    float ring = 0.0;
+    float r = uSize.x * 0.7;
+    for ( int k = 0; k < 8; k++ ) {
+      float angle = float(k) / 8.0 * 6.2831853;
+      float chase = fract(uPhase * 6.0 - float(k) / 8.0);
+      float level = mix(k == 0 ? 1.0 : 0.0, 0.25 + 0.75 * exp(-chase * 5.0), uPower);
+      ring += level * spot(p, vec2(sin(angle), -cos(angle)) * r, 0.0055);
+    }
+    rgb += mix(standby, on, uPower) * ring;
+  } else {
+    vec2 led = flush ? vec2(uSize.x - 0.02, 0.0) : vec2(uSize.x - 0.05, -uSize.y + 0.04);
+    rgb += mix(standby, on, uPower) * spot(p, led, flush ? 0.006 : 0.008);
+    if ( !flush ) rgb += on * uPower * blink * spot(p, led - vec2(0.03, 0.0), 0.008);
+  }
+
+  fragColor = vec4(rgb, 1.0) * inside * volumeFade();
+}`;
+
 let programs;
 function getPrograms() {
   programs ??= {
@@ -469,7 +763,11 @@ function getPrograms() {
     terrain: PIXI.Program.from(TERRAIN_VERTEX, TERRAIN_FRAGMENT, "vira-holo-terrain"),
     wire: PIXI.Program.from(TERRAIN_VERTEX, WIRE_FRAGMENT, "vira-holo-wire"),
     stroke: PIXI.Program.from(STROKE_VERTEX, STROKE_FRAGMENT, "vira-holo-stroke"),
-    mote: PIXI.Program.from(MOTE_VERTEX, MOTE_FRAGMENT, "vira-holo-mote")
+    mote: PIXI.Program.from(MOTE_VERTEX, MOTE_FRAGMENT, "vira-holo-mote"),
+    signPanel: PIXI.Program.from(DISC_VERTEX, SIGN_PANEL_FRAGMENT, "vira-holo-sign-panel"),
+    signBeam: PIXI.Program.from(SIGN_PART_VERTEX, SIGN_BEAM_FRAGMENT, "vira-holo-sign-beam"),
+    signFloor: PIXI.Program.from(SIGN_PART_VERTEX, SIGN_FLOOR_FRAGMENT, "vira-holo-sign-floor"),
+    signBase: PIXI.Program.from(SIGN_PART_VERTEX, SIGN_BASE_FRAGMENT, "vira-holo-sign-base")
   };
   return programs;
 }
@@ -480,6 +778,21 @@ function createQuad() {
     .addAttribute("aVertexPosition", new Float32Array(12), 3)
     .addAttribute("aTextureCoord", new Float32Array(8), 2)
     .addIndex(new Uint16Array([0, 1, 2, 0, 2, 3]));
+}
+
+/** A geometry of object-space points with a vec3 aTextureCoord each (see SIGN_PART_VERTEX). */
+function createPartGeometry(positions, coords, index) {
+  return new PIXI.Geometry()
+    .addAttribute("aVertexPosition", new Float32Array(positions), 3)
+    .addAttribute("aTextureCoord", new Float32Array(coords), 3)
+    .addIndex(new Uint16Array(index));
+}
+
+/** A horizontal rectangle at height y whose aTextureCoord is (x, z) relative to `origin` (x, z). */
+function createFloorRect(x0, x1, z0, z1, y, [ox, oz]=[0, 0]) {
+  const corners = [[x0, z1], [x1, z1], [x1, z0], [x0, z0]];
+  return createPartGeometry(corners.flatMap(([x, z]) => [x, y, z]), corners.flatMap(([x, z]) => [x - ox, z - oz, 0]),
+    [0, 1, 2, 0, 2, 3]);
 }
 
 function setQuad(geometry, hx, y, hz, uvs) {
@@ -685,6 +998,11 @@ export default class HoloRenderer {
     });
     this.panelGeometry = createQuad();
     this.panelShader = new PIXI.Shader(panel, this.#lookUniforms({uPanelShape: new Float32Array([1, 1])}));
+    this.signPanelShader = new PIXI.Shader(getPrograms().signPanel, this.#lookUniforms({
+      uPanelShape: new Float32Array([1, 1]), uReveal: 1, uSweep: -1, uImage2: PIXI.Texture.EMPTY,
+      uWindow: new Float32Array([1, 1, 0, 0]), uWindow2: new Float32Array([1, 1, 0, 0]), uChange: 0,
+      uPages: new Float32Array([1, 0]), uStyle: 0, uScroll: 0
+    }));
     this.panelMesh = new PIXI.Mesh(this.panelGeometry, this.panelShader, this.state);
     // The off table is the panel's hologram look on a fixed top-down camera, with a drawn texture as its image.
     this.offCameraUniform = new Float32Array([0, Math.PI / 2, BASE_DIST, 1]);
@@ -736,6 +1054,8 @@ export default class HoloRenderer {
   #heightmap = null;
   /** @type {TextPanel|null} */
   #textPanel = null;
+  /** A sign's layout (see #layoutSign) and its meshes; null unless in text mode. */
+  #sign = null;
   #linkedImageSrc = null;
   #linkedImage = null;
   /** CPU copy of the heightmap: {width, height, data: Float32Array}. */
@@ -830,27 +1150,33 @@ export default class HoloRenderer {
     if ( src !== this.#heightmapSrc ) this.#loadHeightmap(src);
     const linkedSrc = data.imageFromTile ? null : data.image;
     if ( linkedSrc !== this.#linkedImageSrc ) this.#loadLinkedImage(linkedSrc);
-    if ( data.mode === "text" ) {
-      this.#textPanel ??= new TextPanel();
-      this.#updateTextPanel();
-    }
+    if ( data.mode === "text" ) this.#textPanel ??= new TextPanel();
     else {
       this.#textPanel?.destroy();
       this.#textPanel = null;
     }
     this.#updateGeometry();
+    if ( this.#textPanel ) this.#updateTextPanel();
   }
 
-  /** Render the sign text for the panel's size at the current resolution (it only re-renders on a change). */
+  /**
+   * Render the sign text for the panel's size along its plane, at the current resolution (it only re-renders on a
+   * change). Seen from above the panel is foreshortened, so the texture only needs that much height.
+   */
   #updateTextPanel() {
-    const {width, height} = this.tile.document;
-    const devicePixels = this.resolution * (this.width / width);
-    this.#textPanel.update(this.data.text, width * FILL, height * FILL, devicePixels);
+    const sign = this.#sign;
+    if ( !sign ) return;
+    const scenePerLayout = this.tile.document.width / this.width;
+    const scale = y => this.pixelsPerUnit * (FOCAL / (BASE_DIST - y)) * scenePerLayout;
+    const middle = scale((sign.foot + sign.top) / 2);
+    // The top edge is nearest the camera and shown largest: render for that.
+    const devicePixels = this.resolution * (scale(sign.top) / middle) / scenePerLayout;
+    this.#textPanel.update(this.data.text, 2 * this.#hx * middle, sign.slant * middle, devicePixels, sign.cos);
   }
 
   /** The texture shown on the panel or draped over the terrain. */
   get #image() {
-    if ( this.#textPanel ) return this.#textPanel.texture;
+    if ( this.#textPanel ) return this.#textPanel.pages[0]?.texture ?? PIXI.Texture.EMPTY;
     if ( !this.data.imageFromTile ) return this.#linkedImage ?? PIXI.Texture.EMPTY;
     return this.tile.texture ?? PIXI.Texture.EMPTY;
   }
@@ -924,34 +1250,37 @@ export default class HoloRenderer {
    */
   #updateGeometry() {
     const {mode, look: {lift}} = this.data;
-    const fitRect = mode === "text";
+    const sign = (mode === "text") ? this.#layoutSign() : null;
     let hx;
     let hz;
-    if ( fitRect ) {
-      const longest = Math.max(this.width, this.height);
-      hx = this.width / longest;
-      hz = this.height / longest;
+    if ( sign ) {
+      hx = sign.hx;
+      hz = sign.slant / 2;
+      // The whole sign as seen from above (`half` its projected height) fills the tile.
+      this.pixelsPerUnit = (this.height / 2) * FILL / (FOCAL / BASE_DIST) / sign.half;
     } else {
       const image = this.#image;
       const aspect = (image.width && image.height) ? (image.width / image.height) : 1;
       const diagonal = Math.hypot(aspect, 1);
       hx = aspect / diagonal;
       hz = 1 / diagonal;
+      this.pixelsPerUnit = (Math.min(this.width, this.height) / 2) * FILL / (FOCAL / BASE_DIST);
     }
-    this.volumeUniform.set([this.width, this.height, fitRect ? 1 : 0]);
-    const radiusPixels = (fitRect ? Math.max(this.width, this.height) : Math.min(this.width, this.height)) / 2;
-    this.pixelsPerUnit = radiusPixels * FILL / (FOCAL / BASE_DIST);
+    this.volumeUniform.set([this.width, this.height, sign ? 1 : 0]);
 
     const resolution = Math.clamp(Math.round(this.data.terrain.resolution), 16, 1024);
     const squares = mode === "terrain" ? this.#gridSquares(hx, hz) : null;
-    const key = [hx, hz, lift, mode === "terrain" ? resolution : 0, squares?.across, squares?.down].join();
+    const key = [mode, hx, hz, lift, mode === "terrain" ? resolution : 0, squares?.across, squares?.down, sign?.key].join();
     if ( key === this.#footprint ) return;
     this.#footprint = key;
-    setQuad(this.panelGeometry, hx, lift, hz, [0, 0, 1, 0, 1, 1, 0, 1]);
     this.#hx = hx;
     this.#hz = hz;
+    this.#destroySign();
+    this.#sign = sign;
+    if ( sign ) this.#buildSign();
+    else setQuad(this.panelGeometry, hx, lift, hz, [0, 0, 1, 0, 1, 1, 0, 1]);
     const longest = Math.max(hx, hz);
-    this.panelShader.uniforms.uPanelShape.set([hx / longest, hz / longest]);
+    this.panelMesh.shader.uniforms.uPanelShape.set([hx / longest, hz / longest]);
 
     this.#destroyTerrain();
     if ( this.data.mode !== "terrain" ) return;
@@ -994,6 +1323,110 @@ export default class HoloRenderer {
     return {across: Math.round(count(2 * hx) * 1000) / 1000, down: Math.round(count(2 * hz) * 1000) / 1000};
   }
 
+  /**
+   * Lay out a sign: a panel leaning back at `text.tilt` with its foot at SIGN_FOOT, above a projector (SIGN_BASES) in
+   * front of it. The panel's length up its plane follows from SIGN_PERSPECTIVE at the default camera; its width from the
+   * tile's shape, so that the sign seen from above fills the tile. Everything is placed so that its top edge and the
+   * base's front edge are equally far from the middle of the tile.
+   */
+  #layoutSign() {
+    const {tilt: degrees, base: style} = this.data.text;
+    const base = SIGN_BASES[style] ?? SIGN_BASES.bar;
+    const tilt = Math.toRadians(Math.clamp(Number(degrees) || 60, ...SIGN_TILT_RANGE));
+    const cos = Math.cos(tilt);
+    const sin = Math.sin(tilt);
+    const foot = SIGN_FOOT;
+    const slant = (BASE_DIST - ((BASE_DIST - foot) / SIGN_PERSPECTIVE) - foot) / Math.sin(Math.PI / 3);
+    const top = foot + (slant * sin);
+    // Size on screen of a point at height y, relative to the floor (from straight above).
+    const sigma = y => BASE_DIST / (BASE_DIST - y);
+    const sTop = sigma(top);
+    const sBase = sigma(base.height);
+    const front = base.lens + base.lensOffset + base.depth;
+    const depth = slant * cos;
+    const zb = ((front * sBase) - (depth * sTop)) / (sTop + sBase);
+    const half = (zb + depth) * sTop;
+    const hx = (this.width / this.height) * half / sTop;
+    return {cos, sin, foot, top, slant, zb, half, hx, base, key: [style, tilt].join()};
+  }
+
+  /** Build a sign's base, the floor under it and its beam, and put its panel in place. */
+  #buildSign() {
+    const sign = this.#sign;
+    const hx = this.#hx;
+    const corner = (u, v) => this.#surfacePosition(u, v);
+    const panel = [corner(0, 0), corner(1, 0), corner(1, 1), corner(0, 1)];
+    this.panelGeometry.getBuffer("aVertexPosition").update(new Float32Array(panel.flatMap(p => [p.x, p.y, p.z])));
+    this.panelGeometry.getBuffer("aTextureCoord").update(new Float32Array([0, 0, 1, 0, 1, 1, 0, 1]));
+
+    const {height, depth, lens, lensOffset, radius, shadow, style} = sign.base;
+    const baseHalf = sign.base.width(hx);
+    const lensHalf = Math.max(sign.base.lensWidth(baseHalf), 0.004);
+    const lensZ = sign.zb - lens;
+    const baseZ = lensZ - lensOffset;
+    const topZ = sign.zb + (sign.slant * sign.cos);
+
+    // The beam: faces from the lens to the panel's foot and top edges (16 strips each, so their across coordinate
+    // stays straight) and to its sides.
+    const positions = [];
+    const coords = [];
+    const index = [];
+    const lensPoint = s => [((s * 2) - 1) * lensHalf, height + 0.002, lensZ];
+    const face = (edge, strength) => {
+      for ( let k = 0; k < 16; k++ ) {
+        const n = positions.length / 3;
+        const [s0, s1] = [k / 16, (k + 1) / 16];
+        const [a, b] = [edge(s0), edge(s1)];
+        positions.push(...lensPoint(s0), ...lensPoint(s1), b.x, b.y, b.z, a.x, a.y, a.z);
+        coords.push(s0, 0, strength, s1, 0, strength, s1, 1, strength, s0, 1, strength);
+        index.push(n, n + 1, n + 2, n, n + 2, n + 3);
+      }
+    };
+    face(s => corner(s, 1), 1);
+    face(s => corner(s, 0), 0.2);
+    for ( const side of [0, 1] ) {
+      const n = positions.length / 3;
+      const [foot, top] = [corner(side, 1), corner(side, 0)];
+      positions.push(...lensPoint(side), foot.x, foot.y, foot.z, top.x, top.y, top.z);
+      coords.push(0.5, 0, 0.55, 0, 1, 0.55, 1, 1, 0.55);
+      index.push(n, n + 1, n + 2);
+    }
+    const programs = getPrograms();
+    const camera = {uCamera: this.cameraUniform, uTarget: this.targetUniform, uCenter: this.centerUniform,
+      uVolume: this.volumeUniform, uFrag: this.fragUniform, uColor: this.color};
+    const beamShader = new PIXI.Shader(programs.signBeam, {...camera, uOpacity: 1, uFlicker: 1, uPhase: 0});
+    const floorShader = new PIXI.Shader(programs.signFloor, {...camera, uOpacity: 1, uFlicker: 1,
+      uBase: new Float32Array([0, baseZ, baseHalf, depth]), uRadius: radius, uShadow: shadow,
+      uPanel: new Float32Array([hx, sign.zb, topZ, lensZ]), uLens: lensHalf});
+    const baseShader = new PIXI.Shader(programs.signBase, {...camera, uSize: new Float32Array([baseHalf, depth]),
+      uRadius: radius, uStyle: style, uLensAt: new Float32Array([lensOffset, lensHalf]), uLensGlow: 1, uPower: 1,
+      uPhase: 0});
+    const reach = Math.max(hx, baseHalf) * 1.2;
+    const geometries = [
+      createFloorRect(-reach, reach, baseZ - depth - 0.25, topZ + 0.1, 0),
+      createFloorRect(-baseHalf, baseHalf, baseZ - depth, baseZ + depth, height, [0, baseZ]),
+      createPartGeometry(positions, coords, index)
+    ];
+    const [floorMesh, baseMesh, beamMesh] = [floorShader, baseShader, beamShader]
+      .map((shader, i) => new PIXI.Mesh(geometries[i], shader, this.state));
+    Object.assign(sign, {geometries, floorMesh, baseMesh, beamMesh, baseZ, baseHalf});
+    this.panelMesh.shader = this.signPanelShader;
+    // From above: the floor, the base, the panel over them, and the beam's light in front of the panel.
+    const at = this.stage.getChildIndex(this.panelMesh);
+    this.stage.addChildAt(floorMesh, at);
+    this.stage.addChildAt(baseMesh, at + 1);
+    this.stage.addChildAt(beamMesh, at + 3);
+  }
+
+  #destroySign() {
+    const sign = this.#sign;
+    this.#sign = null;
+    this.panelMesh.shader = this.panelShader;
+    if ( !sign?.geometries ) return;
+    for ( const mesh of [sign.floorMesh, sign.baseMesh, sign.beamMesh] ) mesh.destroy();
+    destroyGeometries(...sign.geometries);
+  }
+
   #destroyTerrain() {
     if ( !this.#terrain ) return;
     for ( const mesh of this.#terrain.meshes ) mesh.destroy();
@@ -1021,7 +1454,8 @@ export default class HoloRenderer {
     const target = this.data.powered ? 1 : 0;
     this.#power += Math.clamp(target - this.#power, -deltaMS / POWER_MS, deltaMS / POWER_MS);
     this.#powerEase = this.#power * this.#power * (3 - (2 * this.#power));
-    const scale = this.#updateTravel() * (0.04 + (0.96 * this.#powerEase));
+    // Signs don't shrink away when switched off: they dissolve into their projector (see #updateSign).
+    const scale = this.#updateTravel() * (this.#sign ? 1 : 0.04 + (0.96 * this.#powerEase));
     this.cameraUniform.set([this.displayYaw, pitch, dist, this.pixelsPerUnit * scale]);
     this.discCameraUniform.set([this.displayYaw, pitch, BASE_DIST, this.pixelsPerUnit]);
     this.targetUniform.set(this.#recenteredTarget(camera));
@@ -1047,7 +1481,7 @@ export default class HoloRenderer {
     this.discMesh.visible = parts.some(Boolean);
     this.discShader.uniforms.uParts.set(parts.map(Number));
     const image = this.#image;
-    const shaders = showTerrain ? [this.#terrain.surfaceShader, this.#terrain.wireShader, this.#terrain.linesShader] : [this.panelShader];
+    const shaders = showTerrain ? [this.#terrain.surfaceShader, this.#terrain.wireShader, this.#terrain.linesShader] : [this.panelMesh.shader];
     for ( const {uniforms} of shaders ) {
       uniforms.uImage = image;
       uniforms.uTint = look.tint;
@@ -1072,12 +1506,103 @@ export default class HoloRenderer {
     disc.uOpacity = look.opacity * this.#powerEase;
     disc.uFlicker = this.#flicker;
     disc.uDashPhase = (seconds * 0.5) % 1;
+    this.#updateSign(seconds);
     this.#updateMotes(showTerrain, seconds);
     this.#layoutLines(showTerrain);
     this.#layoutMarkers(pitch);
     this.#drawPings();
     this.#updateTable(seconds);
     this.#drawOff(seconds);
+  }
+
+  /**
+   * Animate a sign. Switching on, the lens lights and the beam rises first, then the panel materialises from its
+   * foot up; switching off runs the other way, leaving the base with its standby light.
+   */
+  #updateSign(seconds) {
+    const sign = this.#sign;
+    if ( !sign ) return;
+    const {look, text} = this.data;
+    const smooth = (from, to, x) => {
+      const t = Math.clamp((x - from) / (to - from), 0, 1);
+      return t * t * (3 - (2 * t));
+    };
+    const power = this.#power;
+    const beam = smooth(0, 0.45, power);
+    const opacity = look.opacity * this.#fade;
+    const panel = this.panelMesh.shader.uniforms;
+    panel.uOpacity = opacity;
+    panel.uReveal = smooth(0.3, 1, power);
+    const scenePixels = sign.slant * this.pixelsPerUnit * (FOCAL / BASE_DIST) * (this.tile.document.width / this.width);
+    panel.uScanDensity = scenePixels / SIGN_SCANLINE_SPACING;
+    // A band of light sweeps up the panel every 6 seconds.
+    panel.uSweep = (((seconds % 6) / 1.8) * 1.4) - 0.2;
+    panel.uStyle = Math.max(SIGN_PANELS.indexOf(text.panel), 0);
+    panel.uScroll = Math.max(SIGN_SCROLLS.indexOf(text.scroll), 0);
+    this.#showPages(panel, seconds);
+    this.panelMesh.visible = power > 0.3;
+    sign.beamMesh.visible = beam > 0;
+    const light = sign.beamMesh.shader.uniforms;
+    light.uOpacity = opacity * beam;
+    light.uFlicker = this.#flicker;
+    light.uPhase = (seconds / 8) % 1;
+    const floor = sign.floorMesh.shader.uniforms;
+    floor.uOpacity = opacity * beam;
+    floor.uFlicker = this.#flicker;
+    const base = sign.baseMesh.shader.uniforms;
+    base.uLensGlow = (0.1 + (0.9 * beam)) * (beam > 0 ? this.#flicker : 1);
+    base.uPower = beam;
+    base.uPhase = (seconds / 12) % 1;
+
+    // Where the projector is on screen: double-clicking it switches the sign on or off.
+    const project = this.#projector();
+    const {height, depth} = sign.base;
+    const corners = [[-1, -1], [1, -1], [1, 1], [-1, 1]]
+      .map(([x, z]) => project({x: x * sign.baseHalf, y: height, z: sign.baseZ + (z * depth)}));
+    if ( corners.includes(null) ) sign.spot = null;
+    else {
+      const xs = corners.map(p => p.x);
+      const ys = corners.map(p => p.y);
+      const [x0, x1, y0, y1] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
+      sign.spot = {x: (x0 + x1) / 2, y: (y0 + y1) / 2, rx: Math.max((x1 - x0) / 2, 10), ry: Math.max((y1 - y0) / 2, 10)};
+    }
+  }
+
+  /**
+   * Show the sign's page for this moment: pages take turns every `text.interval` seconds on the shared clock, the
+   * next one rising into view over the last SIGN_PAGE_CHANGE_S of each turn. Scrolling starts over with each page.
+   */
+  #showPages(panel, seconds) {
+    const pages = this.#textPanel?.pages ?? [];
+    const count = pages.length;
+    const interval = Math.max(Number(this.data.text.interval) || 8, 2);
+    const index = count > 1 ? Math.floor(seconds / interval) % count : 0;
+    const into = count > 1 ? seconds % interval : seconds;
+    const change = count > 1 ? Math.clamp((into - (interval - SIGN_PAGE_CHANGE_S)) / SIGN_PAGE_CHANGE_S, 0, 1) : 0;
+    const window = (uniform, page, time) => {
+      if ( !page ) return uniform.set([1, 1, 0, 0]);
+      const [u, v] = page.window;
+      const [ru, rv] = page.rate;
+      uniform.set([u, v, (ru * time) % 1, (rv * time) % 1]);
+    };
+    const current = pages[index];
+    const next = pages[(index + 1) % count];
+    panel.uImage = current?.texture ?? PIXI.Texture.EMPTY;
+    window(panel.uWindow, current, into);
+    panel.uImage2 = (change > 0) ? next.texture : PIXI.Texture.EMPTY;
+    window(panel.uWindow2, (change > 0) ? next : null, 0);
+    panel.uChange = change;
+    panel.uPages.set([count, index + change]);
+  }
+
+  /**
+   * Is a render-texture point on a sign's projector?
+   * @param {{x: number, y: number}} point
+   */
+  projectorAt({x, y}) {
+    const spot = this.#sign?.spot;
+    if ( !spot ) return false;
+    return (Math.abs(x - spot.x) <= spot.rx) && (Math.abs(y - spot.y) <= spot.ry);
   }
 
   #updateMotes(showTerrain, seconds) {
@@ -1322,7 +1847,8 @@ export default class HoloRenderer {
     if ( this.tableMesh.visible && (this.#tableHoleDrawn !== this.#tableHole()) ) this.#drawTableTexture(renderer, this.#tableHole());
     renderer.state.set(this.state);
     // Fully off, only the off state is drawn.
-    const hidden = (this.#power > 0) ? [] : this.stage.children.filter(c => (c !== this.offGraphics) && (c !== this.tableMesh) && c.visible);
+    const keep = [this.offGraphics, this.tableMesh, this.#sign?.floorMesh, this.#sign?.baseMesh];
+    const hidden = (this.#power > 0) ? [] : this.stage.children.filter(c => !keep.includes(c) && c.visible);
     for ( const child of hidden ) child.visible = false;
     renderer.render(this.stage, {renderTexture: this.renderTexture, clear: true, transform});
     for ( const child of hidden ) child.visible = true;
@@ -1531,7 +2057,7 @@ export default class HoloRenderer {
     // On terrain, segments are split per grid cell so lines follow the relief.
     const onTerrain = showTerrain && !!this.#heights;
     const step = onTerrain ? 1 / (Math.clamp(Math.round(terrain.resolution), 16, 256) - 1) : 0;
-    const shape = [this.#hx, this.#hz, look.lift, onTerrain ? terrain.relief : 0, step].join();
+    const shape = [this.#hx, this.#hz, this.#sign?.zb, look.lift, onTerrain ? terrain.relief : 0, step].join();
     const surface = (u, v) => this.#surfacePosition(u, v);
     const key = items => `${shape}|${items.map(s => s.id).join()}`;
     const asLine = ({id, points}) => ({id, points, color: MEASURE_INK, width: 1});
@@ -1640,6 +2166,11 @@ export default class HoloRenderer {
 
   /** Object-space position of an image point on the hologram's surface. */
   #surfacePosition(u, v) {
+    const sign = this.#sign;
+    if ( sign ) {
+      const along = (1 - v) * sign.slant;
+      return {x: ((u * 2) - 1) * this.#hx, y: sign.foot + (along * sign.sin), z: sign.zb + (along * sign.cos)};
+    }
     const {lift} = this.data.look;
     const relief = this.data.terrain.relief * RELIEF_SCALE;
     return {
@@ -1718,10 +2249,10 @@ export default class HoloRenderer {
         let first = true;
         for ( let k = 0; k <= 40; k++ ) {
           const angle = (k / 40) * TAU;
-          const x = centre.x + (Math.cos(angle) * radius);
-          const z = centre.z + (Math.sin(angle) * radius);
-          const edge = this.#surfacePosition(Math.clamp((x / this.#hx + 1) / 2, 0, 1), Math.clamp((1 - (z / this.#hz)) / 2, 0, 1));
-          const point = project({x, y: edge.y, z});
+          // Offsets on the image (terrain heights are clamped to its edge), so rings lie on a sign's tilted panel too.
+          const du = (Math.cos(angle) * radius) / (2 * this.#hx);
+          const dv = -(Math.sin(angle) * radius) / (2 * this.#hz);
+          const point = project(this.#surfacePosition(u + du, v + dv));
           if ( !point ) continue;
           if ( first ) g.moveTo(point.x, point.y);
           else g.lineTo(point.x, point.y);
@@ -1756,7 +2287,7 @@ export default class HoloRenderer {
   /** Show the off table (when that's the off style and not fully on) with the content's hologram look. */
   #updateTable(seconds) {
     const {look, offStyle} = this.data;
-    const shown = (offStyle === "table") && (this.#power < 1);
+    const shown = (offStyle === "table") && (this.#power < 1) && !this.#sign;
     this.tableMesh.visible = shown;
     if ( !shown ) return;
     this.offCameraUniform[3] = this.pixelsPerUnit;
@@ -1818,6 +2349,11 @@ export default class HoloRenderer {
     this.#powerSpot = null;
     const alpha = 1 - this.#power;
     if ( alpha <= 0.001 ) return;
+    // A sign's off state is its projector base, which stays on show: that is what switches it on.
+    if ( this.#sign ) {
+      this.#powerSpot = this.#sign.spot;
+      return;
+    }
     const project = this.#projector(this.offCameraUniform, [0, 0]); // Always from straight above, north up
     const color = new PIXI.Color(this.data.look.color).toNumber();
     const pulse = 0.65 + (0.35 * Math.sin(seconds * 2.6));
@@ -1916,7 +2452,8 @@ export default class HoloRenderer {
 
   /** Camera target that centres the projection on an image position. */
   surfaceTarget(u, v) {
-    return {x: Math.clamp(((u * 2) - 1) * this.#hx, -1, 1), z: Math.clamp((1 - (v * 2)) * this.#hz, -1, 1)};
+    const {x, z} = this.#surfacePosition(u, v);
+    return {x: Math.clamp(x, -1, 1), z: Math.clamp(z, -1, 1)};
   }
 
   /** The waypoint under a render-texture point, if any. */
@@ -1958,6 +2495,21 @@ export default class HoloRenderer {
     // Height of the ray above a horizontal plane at height h changes linearly with t.
     const slope = (b * cosP) - sinP;
     const tAtHeight = h => (h - (dist * sinP)) / slope;
+    const sign = this.#sign;
+    if ( sign ) {
+      // Against the sign's tilted panel: (y − foot)·cos − (z − zb)·sin = 0 on it.
+      const p0 = at(0);
+      const p1 = at(1);
+      const off = p => ((p.y - sign.foot) * sign.cos) - ((p.z - sign.zb) * sign.sin);
+      const rate = off(p1) - off(p0);
+      if ( Math.abs(rate) < 1e-9 ) return null;
+      const t = -off(p0) / rate;
+      if ( t <= 0 ) return null;
+      const p = at(t);
+      const along = ((p.y - sign.foot) * sign.sin) + ((p.z - sign.zb) * sign.cos);
+      const uv = {u: ((p.x / this.#hx) + 1) / 2, v: 1 - (along / sign.slant)};
+      return inside(uv) ? uv : null;
+    }
     const {lift} = this.data.look;
     if ( Math.abs(slope) < 1e-6 ) return null;
 
@@ -2002,6 +2554,7 @@ export default class HoloRenderer {
     this.#heightmapSrc = null;
     this.#linkedImageSrc = null;
     this.#textPanel?.destroy();
+    this.#destroySign();
     this.#destroyTerrain();
     this.markerLayer.destroy();
     this.strokeLayer.destroy();

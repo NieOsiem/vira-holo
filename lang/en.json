@@ -49,7 +49,7 @@
       "view": "View",
       "resetView": "Reset view",
       "power": "Powered on",
-      "powerHint": "A switched-off hologram shows only its off style and a spot to click (GM and owners) to turn it back on.",
+      "powerHint": "A switched-off hologram shows only its off style (a sign: its projector) and a spot to click (GM and owners) to turn it back on.",
       "offStyle": "Off style",
       "interactive": "Grab on canvas",
       "interactiveHint": "Lets the GM and owners orbit (drag), pan (Shift+drag) and zoom (click, then scroll) the hologram on the canvas.",
@@ -71,6 +71,8 @@
       },
       "text": {
         "content": "Text",
+        "contentHint": "A line with only --- starts a new page; a line like ![](path/to/image.webp) shows an image.",
+        "insertImage": "Insert image",
         "font": "Font",
         "defaultFont": "World default",
         "size": "Size",
@@ -78,7 +80,16 @@
         "align": "Alignment",
         "left": "Left",
         "center": "Centre",
-        "right": "Right"
+        "right": "Right",
+        "sign": "Sign",
+        "tilt": "Tilt",
+        "tiltHint": "Degrees the panel leans back from the floor: 90 would be upright.",
+        "panel": "Panel",
+        "base": "Projector",
+        "scroll": "Scrolling",
+        "speed": "Scroll speed",
+        "interval": "Seconds per page",
+        "intervalHint": "With several pages, how long each one is shown before the next."
       },
       "look": {
         "color": "Colour",
@@ -199,6 +210,21 @@
       "Circular": "A map can't be placed on itself or on a map inside it."
     },
     "StrokeLimit": "This hologram already has {max} drawings; clear some first.",
+    "SignPanel": {
+      "frame": "Frame with corner brackets",
+      "none": "No frame, just the text",
+      "screen": "Solid screen"
+    },
+    "SignBase": {
+      "bar": "Bar",
+      "puck": "Small round puck",
+      "flush": "Flush with the floor"
+    },
+    "SignScroll": {
+      "none": "None",
+      "up": "Upwards (credits)",
+      "left": "Sideways (ticker)"
+    },
     "OffStyle": {
       "square": "Small glowing square",
       "table": "Round table"

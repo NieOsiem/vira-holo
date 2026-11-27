@@ -88,9 +88,25 @@ export const DEFAULTS = Object.freeze({
     font: "",
     /** Font size in scene pixels, like Drawing text. Text that doesn't fit is shrunk. */
     size: 48,
-    align: "center"
+    align: "center",
+    /** How far the sign leans back from the floor, in degrees (90 = upright). */
+    tilt: 60,
+    /** Panel style (SIGN_PANELS): corner-bracketed frame, bare text, or a solid screen. */
+    panel: "frame",
+    /** Projector style (SIGN_BASES): a bar, a small round puck, or a slit flush with the floor. */
+    base: "bar",
+    /** Text scrolling (SIGN_SCROLLS): none, up (credits) or left (ticker), at `speed` times the usual pace. */
+    scroll: "none",
+    speed: 1,
+    /** Seconds each page (content split by "---" lines) is shown. */
+    interval: 8
   }
 });
+
+export const SIGN_PANELS = Object.freeze(["frame", "none", "screen"]);
+export const SIGN_BASES = Object.freeze(["bar", "puck", "flush"]);
+export const SIGN_SCROLLS = Object.freeze(["none", "up", "left"]);
+export const SIGN_TILT_RANGE = Object.freeze([15, 80]);
 
 /** Defaults that differ per mode: signs face the viewer, hold still and have no projector disc. */
 const MODE_DEFAULTS = Object.freeze({

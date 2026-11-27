@@ -7,12 +7,14 @@
       </div>
       <p class="hint">{{localize "VIRAHOLO.Config.powerHint"}}</p>
     </div>
+    {{#unless isText}}
     <div class="form-group">
       <label for="{{partId}}-off-style">{{localize "VIRAHOLO.Config.offStyle"}}</label>
       <div class="form-fields">
         <select id="{{partId}}-off-style" name="{{flags}}.offStyle">{{selectOptions offStyles selected=holo.offStyle}}</select>
       </div>
     </div>
+    {{/unless}}
     <div class="form-group">
       <label for="{{partId}}-interactive">{{localize "VIRAHOLO.Config.interactive"}}</label>
       <div class="form-fields">
