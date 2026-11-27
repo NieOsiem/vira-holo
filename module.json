@@ -23,6 +23,11 @@
     }
   ],
   "socket": true,
+  "documentTypes": {
+    "RegionBehavior": {
+      "hologram": {}
+    }
+  },
   "compatibility": {
     "minimum": "12",
     "verified": "14"

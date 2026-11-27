@@ -285,6 +285,38 @@
       "wire": "Wireframe, opaque",
       "xray": "Terrain, see-through",
       "solid": "Terrain, opaque"
+    },
+    "Behavior": {
+      "FIELDS": {
+        "tiles": {
+          "label": "Holograms",
+          "hint": "The holograms this behaviour acts on. Pick them from the list beside them, or paste a tile's UUID."
+        },
+        "action": {
+          "label": "Action",
+          "hint": "What happens to them when one of the events happens."
+        },
+        "page": {
+          "label": "Page",
+          "hint": "For \"Turn to page\": the page number, from 1. Turning pages only works on signs paged by hand."
+        }
+      },
+      "Action": {
+        "on": "Switch on",
+        "off": "Switch off",
+        "toggle": "Switch on or off",
+        "next": "Next page",
+        "previous": "Previous page",
+        "page": "Turn to page"
+      },
+      "AddHologram": "Add a hologram on this scene…"
+    }
+  },
+  "TYPES": {
+    "RegionBehavior": {
+      "vira-holo": {
+        "hologram": "Hologram"
+      }
     }
   }
 }
