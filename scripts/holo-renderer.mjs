@@ -47,6 +47,12 @@ const MEASURE_DASHES = 14;
 const WIRE_LINES = 40;
 /** Switching on or off takes this long. */
 const POWER_MS = 900;
+/**
+ * Sign text is redrawn for a new resolution only once the zoom has stayed put this long (redrawing every sign at each
+ * zoom step stuttered), and only when it needs to be sharper or is more than TEXT_OVERSHARP times too sharp.
+ */
+const TEXT_SETTLE_MS = 250;
+const TEXT_OVERSHARP = 2;
 /** A tile needs at least this many grid squares across for the table's hole. */
 const TABLE_HOLE_SQUARES = 3;
 /** The off table's radius (object units), its hole and its switch-on pad as fractions of it, and its texture size. */
@@ -1135,6 +1141,9 @@ export default class HoloRenderer {
   #heightmap = null;
   /** @type {TextPanel|null} */
   #textPanel = null;
+  /** The resolution the sign text was last drawn for, and when to redraw it for the current one (0: no need). */
+  #textResolution = null;
+  #textDue = 0;
   /** A sign's layout (see #layoutSign) and its meshes; null unless in text mode. */
   #sign = null;
   /** Pages paged by hand: the page last fully shown, and the turn to another in progress ({from, to, start}). */
@@ -1257,6 +1266,8 @@ export default class HoloRenderer {
   #updateTextPanel() {
     const sign = this.#sign;
     if ( !sign ) return;
+    this.#textResolution = this.resolution;
+    this.#textDue = 0;
     const scenePerLayout = this.tile.document.width / this.width;
     const scale = y => this.pixelsPerUnit * (FOCAL / (BASE_DIST - y)) * scenePerLayout;
     const middle = scale((sign.foot + sign.top) / 2);
@@ -2011,10 +2022,13 @@ export default class HoloRenderer {
     resolution = Math.min(resolution, maxSize / Math.max(right - left, bottom - top));
     this.viewport = new PIXI.Rectangle(left, top, right - left, bottom - top);
     this.fragUniform.set([left, top, 1 / resolution, 1 / resolution]);
-    if ( this.resolution !== resolution ) {
-      this.resolution = resolution;
-      if ( this.#textPanel ) this.#updateTextPanel();
+    if ( this.#textPanel && (this.resolution !== resolution) ) {
+      const drawn = this.#textResolution;
+      const stale = (drawn === null) || (resolution > drawn) || ((resolution * TEXT_OVERSHARP) < drawn);
+      this.#textDue = stale ? performance.now() + TEXT_SETTLE_MS : 0;
     }
+    this.resolution = resolution;
+    if ( this.#textPanel && this.#textDue && (performance.now() >= this.#textDue) ) this.#updateTextPanel();
     this.#allocate(Math.ceil((right - left) * resolution), Math.ceil((bottom - top) * resolution));
     return true;
   }

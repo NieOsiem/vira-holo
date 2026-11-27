@@ -2,7 +2,14 @@ const PADDING = 0.06;
 const MAX_SIZE = 4096;
 /** Fewest texture pixels per scene pixel, a little above 1 so text stays crisp at normal zoom. */
 const OVERSAMPLE = 1.25;
-const MIN_FONT_SIZE = 6;
+/**
+ * Texture pixels per scene pixel that pages are laid out (measured, wrapped, shrunk to fit) at, whatever the
+ * resolution they are drawn at: zooming never reflows a sign. Measured sizes are rounded to whole pixels, so a low
+ * scale makes text that only just fits shrink a step.
+ */
+const LAYOUT_SCALE = 4;
+/** Smallest font, in scene pixels. */
+const MIN_FONT_SIZE = 4.8;
 const LINE_HEIGHT = 1.2;
 const ANCHORS = {left: 0, center: 0.5, right: 1};
 /** A line that is only an image, written like Markdown: ![](path/to/image.webp) */
@@ -232,6 +239,12 @@ export default class TextPanel {
   /** Whether the content shows the in-game date or time (re-render when it changes). */
   usesTime = false;
   #key = "";
+  /**
+   * Pages laid out at LAYOUT_SCALE, kept while content, font and panel size stay the same: a new resolution (zoom)
+   * only redraws them. Measuring HTML is slow (each measure restyles the whole document).
+   */
+  #layouts = [];
+  #layoutKey = "";
   #request = 0;
   #destroyed = false;
 
@@ -250,24 +263,31 @@ export default class TextPanel {
     const {pages, usesTime} = await sourcePages(text);
     if ( (request !== this.#request) || this.#destroyed ) return; // Superseded or destroyed meanwhile
     this.usesTime = usesTime;
-    const key = JSON.stringify([pages, font, text.size, text.align, text.scroll, text.speed,
-      Math.round(width), Math.round(height), density, squash]);
+    const layoutKey = JSON.stringify([pages, font, text.size, text.align, text.scroll, Math.round(width),
+      Math.round(height)]);
+    const key = JSON.stringify([layoutKey, text.speed, density, squash]);
     if ( key === this.#key ) return;
     this.#key = key;
-    try {
-      await document.fonts.load(`32px "${font}"`);
-    } catch(err) {
-      console.warn(`Vira Holo | Could not load font "${font}"`, err);
+    // Foundry's texture cache may have evicted (destroyed) an image since the layout was made.
+    const evicted = this.#layouts.some(layout => layout.items.some(item => item.texture && !item.texture.baseTexture));
+    if ( (layoutKey !== this.#layoutKey) || evicted ) {
+      try {
+        await document.fonts.load(`32px "${font}"`);
+      } catch(err) {
+        console.warn(`Vira Holo | Could not load font "${font}"`, err);
+      }
+      const html = pages.flat().some(b => b.type === "html") ? await htmlStyle(font) : null;
+      const sources = [...new Set(pages.flat().filter(b => b.type === "image").map(b => b.src))];
+      const images = new Map(await Promise.all(sources.map(async src => [src, await loadImage(src)])));
+      if ( (key !== this.#key) || this.#destroyed ) return;
+      const options = {font, size: text.size, align: text.align, scroll: text.scroll, width, height, html};
+      this.#layouts = pages.map(blocks => layoutPage(blocks, images, options));
+      this.#layoutKey = layoutKey;
     }
-    const html = pages.flat().some(b => b.type === "html") ? await htmlStyle(font) : null;
-    const sources = [...new Set(pages.flat().filter(b => b.type === "image").map(b => b.src))];
-    const images = new Map(await Promise.all(sources.map(async src => [src, await loadImage(src)])));
-    if ( (key !== this.#key) || this.#destroyed ) return;
-    const options = {font, size: text.size, align: text.align, scroll: text.scroll, speed: text.speed, width, height,
-      density, squash, html};
-    // One page at a time: pages share the font family's HTML style, which each lays out with its own sizes.
+    // One page at a time: pages share the font family's HTML style, which each draws with its own sizes.
+    const layouts = this.#layouts;
     const rendered = [];
-    for ( const blocks of pages ) rendered.push(await this.#renderPage(blocks, images, options));
+    for ( const layout of layouts ) rendered.push(await renderPage(layout, {density, squash, speed: text.speed}));
     if ( (key !== this.#key) || this.#destroyed ) {
       for ( const page of rendered ) page.texture.destroy(true);
       return;
@@ -277,74 +297,87 @@ export default class TextPanel {
     for ( const page of old ) page.texture.destroy(true);
   }
 
-  async #renderPage(blocks, images, {font, size, align, scroll, speed, width, height, density, squash, html}) {
-    const items = blocks.map(block => ((block.type === "image") ? {...block, texture: images.get(block.src)} : block))
-      .filter(block => (block.type !== "image") || block.texture);
-    const lay = scroll === "left" ? layoutTicker : layoutColumn;
-    let scale = Math.min(density, MAX_SIZE / Math.max(width, height, 1));
-    const measurer = html ? new PIXI.HTMLText("", html) : null;
-    const options = {font, size, align, scroll, width, height, html, measurer};
-    let layout = lay(items, {...options, scale});
-    const extent = Math.max(layout.width, layout.height);
-    if ( extent > MAX_SIZE ) {
-      scale *= MAX_SIZE / extent;
-      layout = lay(items, {...options, scale});
-    }
-
-    const container = new PIXI.Container();
-    const rendering = [];
-    for ( const item of layout.items ) {
-      let object;
-      if ( item.texture ) {
-        object = new PIXI.Sprite(item.texture);
-        object.width = item.w;
-        object.height = item.h;
-        object.position.set(item.x, item.y);
-      } else {
-        if ( item.html ) {
-          object = new PIXI.HTMLText(item.html, html);
-          object.maxWidth = object.maxHeight = MAX_SIZE;
-          rendering.push(object.updateText(false));
-        }
-        else object = new PIXI.Text(item.text, item.style);
-        object.resolution = 1;
-        object.anchor.set(item.anchor, 0);
-        object.position.set(item.x, item.y);
-      }
-      container.addChild(object);
-    }
-    await Promise.all(rendering); // HTML blocks are drawn as images, which load asynchronously
-    container.scale.y = squash;
-    const w = Math.max(2, Math.ceil(layout.width));
-    const h = Math.max(2, Math.ceil(layout.height * squash));
-    const texture = PIXI.RenderTexture.create({width: w, height: h});
-    canvas.app.renderer.render(container, {renderTexture: texture, clear: true});
-    // Text textures go with it; image textures belong to Foundry's cache, and the HTML style is kept for reuse.
-    container.destroy({children: true});
-    measurer?.destroy();
-    const pace = layout.pace * speed;
-    // Targets on the panel (its window onto the texture). Scrolling content passes through the whole window.
-    const panelW = width * scale;
-    const panelH = height * scale;
-    let targets = layout.targets.map(([x0, y0, x1, y1]) => [x0 / panelW, y0 / panelH, x1 / panelW, y1 / panelH]);
-    if ( targets.length && (scroll === "up") ) {
-      targets = [[Math.min(...targets.map(t => t[0])), 0.1, Math.max(...targets.map(t => t[2])), 0.9]];
-    } else if ( targets.length && (scroll === "left") ) {
-      targets = [[0.06, Math.min(...targets.map(t => t[1])), 0.94, Math.max(...targets.map(t => t[3]))]];
-    }
-    return {
-      texture, targets,
-      window: [Math.min(1, (width * scale) / layout.width), Math.min(1, (height * scale) / layout.height)],
-      rate: scroll === "left" ? [pace / layout.width, 0] : (scroll === "up" ? [0, pace / layout.height] : [0, 0])
-    };
-  }
-
   destroy() {
     this.#destroyed = true;
     this.#key = "";
+    this.#layouts = [];
+    this.#layoutKey = "";
     for ( const page of this.pages ) page.texture.destroy(true);
     this.pages = [];
   }
+}
+
+/**
+ * Lay out one page at LAYOUT_SCALE texture pixels per scene pixel, with where its content is on the panel.
+ * @returns {object}   The layout (see layoutColumn/layoutTicker) plus what renderPage needs to draw it
+ */
+function layoutPage(blocks, images, {font, size, align, scroll, width, height, html}) {
+  const items = blocks.map(block => ((block.type === "image") ? {...block, texture: images.get(block.src)} : block))
+    .filter(block => (block.type !== "image") || block.texture);
+  const lay = scroll === "left" ? layoutTicker : layoutColumn;
+  const scale = Math.min(LAYOUT_SCALE, MAX_SIZE / Math.max(width, height, 1));
+  const measurer = html ? new PIXI.HTMLText("", html) : null;
+  if ( measurer ) measurer.maxWidth = measurer.maxHeight = MAX_SIZE;
+  const layout = lay(items, {font, size, align, scroll, width, height, html, measurer, scale});
+  measurer?.destroy();
+  // Targets on the panel (its window onto the texture). Scrolling content passes through the whole window.
+  const panelW = width * scale;
+  const panelH = height * scale;
+  let targets = layout.targets.map(([x0, y0, x1, y1]) => [x0 / panelW, y0 / panelH, x1 / panelW, y1 / panelH]);
+  if ( targets.length && (scroll === "up") ) {
+    targets = [[Math.min(...targets.map(t => t[0])), 0.1, Math.max(...targets.map(t => t[2])), 0.9]];
+  } else if ( targets.length && (scroll === "left") ) {
+    targets = [[0.06, Math.min(...targets.map(t => t[1])), 0.94, Math.max(...targets.map(t => t[3]))]];
+  }
+  return {
+    ...layout, targets, scale, html, align, scroll,
+    window: [Math.min(1, panelW / layout.width), Math.min(1, panelH / layout.height)]
+  };
+}
+
+/**
+ * Draw a laid-out page into a texture at `density` texture pixels per scene pixel (texts are drawn at that
+ * resolution rather than laid out again), its height squashed by `squash`.
+ */
+async function renderPage(layout, {density, squash, speed}) {
+  const {html, scroll} = layout;
+  const zoom = Math.min(density / layout.scale, MAX_SIZE / Math.max(layout.width, layout.height, 1));
+  if ( layout.items.some(item => item.html) ) setHtmlSize(html, layout.align, layout.fontSize, layout.wrapWidth);
+  const container = new PIXI.Container();
+  const rendering = [];
+  for ( const item of layout.items ) {
+    let object;
+    if ( item.texture ) {
+      object = new PIXI.Sprite(item.texture);
+      object.width = item.w;
+      object.height = item.h;
+      object.position.set(item.x, item.y);
+    } else {
+      if ( item.html ) {
+        object = new PIXI.HTMLText(item.html, html);
+        object.maxWidth = object.maxHeight = MAX_SIZE;
+      }
+      else object = new PIXI.Text(item.text, item.style);
+      object.resolution = zoom;
+      if ( item.html ) rendering.push(object.updateText(false));
+      object.anchor.set(item.anchor, 0);
+      object.position.set(item.x, item.y);
+    }
+    container.addChild(object);
+  }
+  await Promise.all(rendering); // HTML blocks are drawn as images, which load asynchronously
+  container.scale.set(zoom, zoom * squash);
+  const w = Math.max(2, Math.ceil(layout.width * zoom));
+  const h = Math.max(2, Math.ceil(layout.height * zoom * squash));
+  const texture = PIXI.RenderTexture.create({width: w, height: h});
+  canvas.app.renderer.render(container, {renderTexture: texture, clear: true});
+  // Text textures go with it; image textures belong to Foundry's cache, and the HTML style is kept for reuse.
+  container.destroy({children: true});
+  const pace = layout.pace * speed;
+  return {
+    texture, targets: layout.targets, window: layout.window,
+    rate: scroll === "left" ? [pace / layout.width, 0] : (scroll === "up" ? [0, pace / layout.height] : [0, 0])
+  };
 }
 
 function setHtmlSize(style, align, size, wrapWidth) {
@@ -376,7 +409,8 @@ function layoutColumn(items, {font, size, align, scroll, width, height, scale, h
   const scrolling = scroll === "up";
   const images = items.filter(item => item.texture);
   const natural = item => innerW * (item.texture.height / item.texture.width);
-  let fontSize = Math.max(size * scale, MIN_FONT_SIZE);
+  const minFontSize = MIN_FONT_SIZE * scale;
+  let fontSize = Math.max(size * scale, minFontSize);
   let style;
   let heights;
   // Size of a text or HTML block at the current font size (HTML measured without its padding).
@@ -396,8 +430,8 @@ function layoutColumn(items, {font, size, align, scroll, width, height, scale, h
     const fits = scrolling || (images.length
       ? images.every(item => share >= Math.min(natural(item), innerH * MIN_IMAGE_SHARE))
       : textHeight <= innerH);
-    if ( fits || (fontSize <= MIN_FONT_SIZE) ) break;
-    fontSize = Math.max(fontSize * 0.9, MIN_FONT_SIZE);
+    if ( fits || (fontSize <= minFontSize) ) break;
+    fontSize = Math.max(fontSize * 0.9, minFontSize);
   }
 
   const gap = fontSize * 0.5;
@@ -431,7 +465,7 @@ function layoutColumn(items, {font, size, align, scroll, width, height, scale, h
     y += item.h + gap;
   }
   return {
-    items: placed, width: W, targets,
+    items: placed, width: W, targets, fontSize, wrapWidth: innerW,
     height: scrolling ? contentHeight + (2 * pad) + H : H,
     pace: fontSize * LINE_HEIGHT * SCROLL_UP
   };
@@ -443,7 +477,7 @@ function layoutTicker(items, {font, size, align, width, height, scale}) {
   const H = height * scale;
   const pad = Math.round(H * PADDING);
   const innerH = H - (2 * pad);
-  const fontSize = Math.max(Math.min(size * scale, innerH / LINE_HEIGHT), MIN_FONT_SIZE);
+  const fontSize = Math.max(Math.min(size * scale, innerH / LINE_HEIGHT), MIN_FONT_SIZE * scale);
   const style = textStyle(font, align, fontSize);
   const gap = fontSize * 2;
   const placed = [];
