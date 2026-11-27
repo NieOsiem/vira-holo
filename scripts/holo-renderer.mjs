@@ -375,6 +375,7 @@ attribute float aSide;
 attribute vec3 aColor;
 attribute float aWidth;
 attribute float aDistance;
+attribute float aCap; // -1/1: pushed out past the line's start/end into a round cap; 0 along the line
 ${CAMERA_UNIFORMS}
 uniform float uWidth; // half width in layout pixels of a medium stroke
 uniform float uWidthScale;
@@ -384,6 +385,7 @@ varying float vEdge;
 varying float vHalf;
 varying float vDepth;
 varying float vDistance;
+varying float vAlong;
 ${PROJECT}
 vec2 pixels(vec3 v) {
   return v.xy * ${FOCAL.toFixed(2)} * uCamera.w / (v.z + uCamera.z);
@@ -404,12 +406,13 @@ void main() {
   float extent = halfWidth + uPixel; // one device pixel more for antialiasing
   float stretch = 1.0 / max(dot(miter, vec2(-d1.y, d1.x)), 0.5);
   vEdge = aSide * extent;
+  vAlong = abs(aCap) * extent;
   vHalf = halfWidth;
   vColor = aColor;
   vDistance = aDistance;
   vDepth = v.z;
   float w = v.z + uCamera.z;
-  gl_Position = clipFrom((here + miter * aSide * extent * stretch) * w, w, ${STROKE_DEPTH_BIAS.toFixed(4)});
+  gl_Position = clipFrom((here + miter * aSide * extent * stretch + t * aCap * extent) * w, w, ${STROKE_DEPTH_BIAS.toFixed(4)});
 }`;
 
 const STROKE_FRAGMENT = `
@@ -419,6 +422,7 @@ varying float vEdge;
 varying float vHalf;
 varying float vDepth;
 varying float vDistance;
+varying float vAlong;
 uniform float uOpacity;
 uniform float uFlicker;
 uniform float uPixel;
@@ -428,7 +432,7 @@ uniform float uDash; // dashes per object-space unit along the line; 0 for a sol
 uniform float uDashPhase;
 ${VOLUME}
 void main() {
-  float d = abs(vEdge);
+  float d = length(vec2(vEdge, vAlong)); // round at the ends
   float hard = clamp((vHalf - d) / uPixel + 0.5, 0.0, 1.0);
   float soft = 1.0 - smoothstep(0.0, vHalf + uPixel, d);
   float depth = mix(1.0, 0.6, clamp((vDepth + 1.0) * 0.5, 0.0, 1.0));
