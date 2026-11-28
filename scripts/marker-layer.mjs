@@ -46,6 +46,44 @@ const TOLERANCE = 0.2;
 const MARGIN = 2;
 /** zIndex of a hovered or selected pin, above everything else drawn far to near. */
 const FOCUS_Z = 1e6;
+/** Halo textures: the picture's longer side in them, the room around it, and how much of it the blur spreads over. */
+const HALO_ICON = 128;
+const HALO_PAD = 80;
+const HALO_BLUR = 36;
+/** Halo alpha, like the built-in glyphs' glow (stronger when selected). */
+const HALO_ALPHA = 0.22;
+/** @type {Map<string, PIXI.RenderTexture>} Each pin image's halo (white; tinted per pin), made once. */
+const halos = new Map();
+
+/**
+ * A pin image's halo: its silhouette, grown and softened, in white. Made once per image (and kept: it's small), so
+ * pins draw it as a plain sprite rather than blurring every frame.
+ * @param {PIXI.Texture} texture
+ * @param {string} src
+ */
+function haloOf(texture, src) {
+  let halo = halos.get(src);
+  if ( halo ) return halo;
+  const size = HALO_ICON + (2 * HALO_PAD);
+  const sprite = new PIXI.Sprite(texture);
+  sprite.anchor.set(0.5);
+  sprite.position.set(size / 2, size / 2);
+  sprite.scale.set(HALO_ICON / Math.max(texture.width, texture.height, 1));
+  // Blur the silhouette, then turn it white and boost its alpha, so the halo is a solid band that fades at its edge.
+  const blur = new PIXI.BlurFilter(HALO_BLUR, 4);
+  const whiten = new PIXI.ColorMatrixFilter();
+  whiten.matrix = [0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 6, 0];
+  sprite.filters = [blur, whiten];
+  sprite.filterArea = new PIXI.Rectangle(0, 0, size, size);
+  halo = PIXI.RenderTexture.create({width: size, height: size});
+  canvas.app.renderer.render(sprite, {renderTexture: halo, clear: true});
+  sprite.filters = null;
+  sprite.destroy();
+  blur.destroy();
+  whiten.destroy();
+  halos.set(src, halo);
+  return halo;
+}
 
 /** One waypoint: a stem from the surface, a ground ring, a glyph head and an optional label. */
 class MarkerSprite {
@@ -59,7 +97,11 @@ class MarkerSprite {
     this.icon.anchor.set(0.5);
     this.icon.visible = false;
     this.iconSrc = null;
-    this.head.addChild(this.icon);
+    /** Its halo, behind it (see haloOf). */
+    this.halo = new PIXI.Sprite(PIXI.Texture.EMPTY);
+    this.halo.anchor.set(0.5);
+    this.halo.visible = false;
+    this.head.addChild(this.halo, this.icon);
     this.label = new PIXI.Container();
     this.labelBox = new PIXI.Graphics();
     this.text = new PIXI.Text("", LABEL_STYLE);
@@ -109,6 +151,7 @@ class MarkerSprite {
       if ( fill ) this.head.endFill();
     };
     this.icon.visible = false;
+    this.halo.visible = false;
     // Another glyph: forget the picture, so one still loading doesn't clear the head when it arrives.
     if ( marker.glyph !== IMAGE_GLYPH ) this.iconSrc = null;
     if ( marker.glyph === IMAGE_GLYPH ) {
@@ -118,6 +161,8 @@ class MarkerSprite {
         this.head.lineStyle({width: Math.max(1, radius * (selected ? 0.14 : 0.06)), color, alpha: selected ? 0.95 : 0.5})
           .drawCircle(0, 0, radius * 1.05);
       };
+      this.halo.tint = color;
+      this.halo.alpha = HALO_ALPHA * (selected ? 1.6 : 1);
       if ( !this.#showIcon(marker.image, radius * 2, marker.tint ? color : 0xffffff) ) standIn();
     }
     else if ( marker.glyph === "portal" ) {
@@ -174,6 +219,7 @@ class MarkerSprite {
       if ( !texture || this.destroyed || (this.iconSrc !== src) ) return;
       this.head.clear();
       this.icon.texture = texture;
+      this.halo.texture = haloOf(texture, src);
       this.#fitIcon();
     }).catch(err => console.warn(`Vira Holo | Pin image ${src} didn't load:`, err));
     return false;
@@ -182,7 +228,9 @@ class MarkerSprite {
   #fitIcon() {
     const {width, height} = this.icon.texture;
     this.icon.scale.set(this.iconExtent / Math.max(width, height, 1));
+    this.halo.scale.set(this.iconExtent / HALO_ICON);
     this.icon.visible = true;
+    this.halo.visible = true;
   }
 
   /**
@@ -252,7 +300,9 @@ class MarkerSprite {
 
   destroy() {
     this.destroyed = true;
-    this.icon.texture = PIXI.Texture.EMPTY; // Foundry's cache owns the picture
+    // Foundry's cache owns the picture, and the halos are kept for other pins.
+    this.icon.texture = PIXI.Texture.EMPTY;
+    this.halo.texture = PIXI.Texture.EMPTY;
     this.container.destroy({children: true});
   }
 }
