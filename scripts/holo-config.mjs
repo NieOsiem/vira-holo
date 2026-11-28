@@ -162,14 +162,16 @@ export default class HoloConfig extends HandlebarsApplicationMixin(DocumentSheet
       })),
       cameraSliders: sliders("camera"),
       // A map with its own pin and label settings shows (and edits) those instead of the hologram's.
-      markingSliders: Object.entries(MARKING_RANGES).map(([key, [min, max]]) => ({
-        key, min, max, step: 0.05,
+      markingSliders: Object.entries(MARKING_RANGES).map(([key, [min, max, step]]) => ({
+        key, min, max, step,
         name: markingField(holo, key),
         value: holo.look[key],
         label: localize(`VIRAHOLO.Config.look.${key}`)
       })),
       pinLeanField: markingField(holo, "pinLean"),
       labelModeField: markingField(holo, "labelMode"),
+      labelFontField: markingField(holo, "labelFont"),
+      labelFonts: {"": localize("VIRAHOLO.Config.look.labelFontDefault"), ...Fonts.getAvailableFontChoices()},
       labelModes: Object.fromEntries(LABEL_MODES.map(m => [m, localize(`VIRAHOLO.LabelMode.${m}`)])),
       markerCount: holo.annotations.markers.length,
       strokeCount: holo.annotations.strokes.length,

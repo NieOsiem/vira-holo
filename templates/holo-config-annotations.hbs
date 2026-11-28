@@ -19,6 +19,14 @@
     </div>
     {{/each}}
     <div class="form-group">
+      <label for="{{partId}}-label-font">{{localize "VIRAHOLO.Config.look.labelFont"}}</label>
+      <div class="form-fields">
+        <select id="{{partId}}-label-font" name="{{labelFontField}}">
+          {{selectOptions labelFonts selected=holo.look.labelFont}}
+        </select>
+      </div>
+    </div>
+    <div class="form-group">
       <label for="{{partId}}-pin-lean">{{localize "VIRAHOLO.Config.look.pinLean"}}</label>
       <div class="form-fields">
         <input type="checkbox" id="{{partId}}-pin-lean" name="{{pinLeanField}}" {{checked holo.look.pinLean}}>

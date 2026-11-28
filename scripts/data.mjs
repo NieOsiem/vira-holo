@@ -54,7 +54,10 @@ export const DEFAULTS = Object.freeze({
     pinHeight: 1,
     labelSize: 1,
     /** Whether pins may lean aside to find their label room when nothing upright is free. */
-    pinLean: true
+    pinLean: true,
+    /** Labels' font family (empty: the hologram's monospace) and letter spacing, in ems. */
+    labelFont: "",
+    labelSpacing: 0.08
   },
   terrain: {
     /** Greyscale image covering the same area as the tile's image; brighter is higher. */
@@ -213,10 +216,14 @@ export function mapChildren(uuid) {
   });
 }
 
-/** Slider ranges [min, max] of the pin and label sizes a hologram (`look`) or a map (`state.markings`) sets. */
-export const MARKING_RANGES = Object.freeze({pinHeight: [0, 3], labelSize: [0.3, 2.5]});
-/** The pin and label settings of the look a map may have its own of: the sizes, and whether pins may lean. */
-export const MARKING_KEYS = Object.freeze([...Object.keys(MARKING_RANGES), "pinLean", "labelMode"]);
+/**
+ * Slider ranges [min, max, step] of the pin and label settings a hologram (`look`) or a map (`state.markings`) sets.
+ */
+export const MARKING_RANGES = Object.freeze({pinHeight: [0, 3, 0.05], labelSize: [0.3, 2.5, 0.05],
+  labelSpacing: [0, 0.5, 0.01]});
+/** The pin and label settings of the look a map may have its own of: the sliders', pin leaning, labels and font. */
+export const MARKING_KEYS = Object.freeze([...Object.keys(MARKING_RANGES), "pinLean", "labelMode", "labelFont"]);
+const MAX_FONT_NAME = 100;
 /**
  * Which labels a hologram shows: all, pins' only, measurements' and areas' only, or none. Hidden ones show while
  * hovered (or selected).
@@ -226,7 +233,7 @@ export const LABEL_MODES = Object.freeze(["all", "pins", "measures", "none"]);
 /**
  * A map's own pin and label settings, which override the hologram's look wherever the map is shown.
  * @param {object} state   The map journal's state
- * @returns {{pinHeight: number, labelSize: number, pinLean: boolean, labelMode: string}|null}   Null if it has none
+ * @returns {object|null}   {pinHeight, labelSize, labelSpacing, pinLean, labelMode, labelFont}; null if it has none
  */
 function mapMarkings(state) {
   if ( !state.markings ) return null;
@@ -239,6 +246,8 @@ function mapMarkings(state) {
   markings.pinLean = (typeof lean === "boolean") ? lean : DEFAULTS.look.pinLean;
   const mode = state.markings.labelMode;
   markings.labelMode = LABEL_MODES.includes(mode) ? mode : DEFAULTS.look.labelMode;
+  const font = state.markings.labelFont;
+  markings.labelFont = (typeof font === "string") ? font.slice(0, MAX_FONT_NAME) : DEFAULTS.look.labelFont;
   return markings;
 }
 

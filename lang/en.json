@@ -117,6 +117,9 @@
         "labelModeHint": "Hidden labels show while you hover their pin, measurement line or area. The labels glyph on the hologram's tool ring switches this for everyone.",
         "pinHeight": "Pin height",
         "labelSize": "Label size",
+        "labelSpacing": "Letter spacing",
+        "labelFont": "Label font",
+        "labelFontDefault": "Hologram monospace",
         "pinLean": "Lean pins aside",
         "pinLeanHint": "Where labels crowd, a pin whose label has no room upright tips over a little to find some. Off: such labels only fade out (hover a pin to see its label).",
         "motes": "Data motes"
@@ -239,7 +242,7 @@
       "OwnLook": "Own look for this map",
       "OwnLookHint": "Off: this map is shown with the hologram's look. On: changes below are saved with the map and shown on any hologram that travels here.",
       "OwnMarkings": "Own pin and label settings for this map",
-      "OwnMarkingsHint": "Off: pin height, label size and leaning are the hologram's. On: the settings above are saved with the map and used on any hologram showing it.",
+      "OwnMarkingsHint": "Off: these pin and label settings are the hologram's. On: the settings above are saved with the map and used on any hologram showing it.",
       "Circular": "A map can't be placed on itself or on a map inside it."
     },
     "StrokeLimit": "This hologram already has {max} drawings; clear some first.",

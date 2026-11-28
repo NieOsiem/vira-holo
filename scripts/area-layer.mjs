@@ -1,6 +1,9 @@
+import {centredTextY, outlineWidth, setLabelText} from "./label-style.mjs";
+
 /** Longer side of the overlay texture areas are drawn into, in texels. */
 const OVERLAY_SIZE = 1024;
-const LABEL_STYLE = {fontFamily: "monospace", fill: "#ffffff", fontWeight: "bold", letterSpacing: 1};
+/** The label text's weight; its colour comes from the area's ink, its font, size and spacing from the look. */
+const LABEL_STYLE = {fill: "#ffffff", fontWeight: "bold"};
 /** Label font size in label size units at label size 1, and the smallest font (render-texture pixels). */
 const LABEL_FONT = 0.75;
 const MIN_FONT = 1;
@@ -22,28 +25,28 @@ class AreaLabel {
     this.labelAlpha = 1;
   }
 
-  draw(text, color, size, labelSize, selected, resolution) {
-    const key = [text, color, size, labelSize, selected, resolution].join("|");
+  draw(text, color, size, style, selected, resolution) {
+    const key = [text, color, size, JSON.stringify(style), selected, resolution].join("|");
     if ( key === this.key ) return;
     this.key = key;
     const ink = new PIXI.Color(color);
     // Text is a bitmap: render it at the hologram's resolution, and sharp enough to be scaled up by perspective.
     this.text.resolution = resolution * MAX_SCALE;
-    const font = Math.max(MIN_FONT, Math.round(size * LABEL_FONT * labelSize * 10) / 10);
-    this.text.style.fontSize = font;
+    const font = Math.max(MIN_FONT, Math.round(size * LABEL_FONT * style.size * 10) / 10);
     const [r, g, b] = ink.toRgbArray();
     this.text.style.fill = new PIXI.Color([(r + 1) / 2, (g + 1) / 2, (b + 1) / 2]).toHex(); // Ink, lightened to read
-    this.text.text = text;
+    setLabelText(this.text, text, font, style);
     const padX = font * 0.45;
     const padY = font * 0.17;
     const w = this.text.width + (padX * 2);
     const h = this.text.height + (padY * 2);
     this.box.clear()
-      .lineStyle({width: Math.max(1, font * (selected ? 0.15 : 0.075)), color: ink.toNumber(), alpha: selected ? 1 : 0.7})
+      .lineStyle({width: outlineWidth(font, selected ? 0.15 : 0.075, style, resolution, selected),
+        color: ink.toNumber(), alpha: selected ? 1 : 0.7})
       .beginFill(0x0a0806, 0.75)
       .drawRoundedRect(0, 0, w, h, font * 0.25)
       .endFill();
-    this.text.position.set(padX, padY);
+    this.text.position.set(padX, centredTextY(this.text, h));
     this.size = {w, h};
   }
 
@@ -131,9 +134,11 @@ export default class AreaLayer {
   /**
    * Create and remove labels to match the areas.
    * @param {{id: string, text: string, color: string}[]} labels
+   * @param {number} size
+   * @param {object} style    How labels are drawn (see labelStyle)
    * @returns {Map<string, AreaLabel>}
    */
-  sync(labels, size, labelSize, selected, resolution=1) {
+  sync(labels, size, style, selected, resolution=1) {
     const ids = new Set(labels.map(l => l.id));
     for ( const [id, sprite] of this.#sprites ) {
       if ( ids.has(id) ) continue;
@@ -147,7 +152,7 @@ export default class AreaLayer {
         this.#sprites.set(id, sprite);
         this.parent.addChild(sprite.container);
       }
-      sprite.draw(text, color, size, labelSize, id === selected, resolution);
+      sprite.draw(text, color, size, style, id === selected, resolution);
     }
     return this.#sprites;
   }

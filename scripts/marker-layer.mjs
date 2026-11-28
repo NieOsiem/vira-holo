@@ -1,4 +1,5 @@
 import {IMAGE_GLYPH, MARKER_SIZES} from "./data.mjs";
+import {centredTextY, outlineWidth, setLabelText} from "./label-style.mjs";
 
 /** Glyph outlines as points on a unit circle; circle is drawn as a circle. */
 const GLYPH_SHAPES = {
@@ -6,12 +7,8 @@ const GLYPH_SHAPES = {
   triangle: [0, -1, 0.95, 0.75, -0.95, 0.75],
   square: [-0.78, -0.78, 0.78, -0.78, 0.78, 0.78, -0.78, 0.78]
 };
-const LABEL_STYLE = {
-  fontFamily: "monospace",
-  fill: "#fff3d6",
-  fontWeight: "bold",
-  letterSpacing: 1
-};
+/** The label text's colour and weight; its font, size and spacing come from the look (see label-style.mjs). */
+const LABEL_STYLE = {fill: "#fff3d6", fontWeight: "bold"};
 /** Label font size in pin size units at label size 1. */
 const LABEL_FONT = 0.9;
 /**
@@ -132,10 +129,10 @@ class MarkerSprite {
   }
 
   /** Redraw the parts that only change with the waypoint's settings or the hologram's size. */
-  draw(marker, unit, labelSize, selected, resolution) {
+  draw(marker, unit, style, selected, resolution) {
     this.labelShow = marker.labelShow ?? "auto";
-    const key = [marker.label, marker.glyph, marker.color, marker.size, marker.image, marker.tint, unit, labelSize,
-      selected, resolution].join("|");
+    const key = [marker.label, marker.glyph, marker.color, marker.size, marker.image, marker.tint, unit,
+      JSON.stringify(style), selected, resolution].join("|");
     if ( key === this.key ) return;
     this.key = key;
     const size = unit * (MARKER_SIZES[marker.size] ?? 1);
@@ -182,19 +179,18 @@ class MarkerSprite {
     this.hasLabel = !!marker.label;
     if ( this.hasLabel ) {
       const font = Math.max(MIN_FONT,
-        Math.round(unit * (LABEL_TIERS[marker.size] ?? 1) * LABEL_FONT * labelSize * 10) / 10);
-      this.text.style.fontSize = font;
-      this.text.text = marker.label.toUpperCase();
+        Math.round(unit * (LABEL_TIERS[marker.size] ?? 1) * LABEL_FONT * style.size * 10) / 10);
+      setLabelText(this.text, marker.label.toUpperCase(), font, style);
       const padX = font * 0.4;
       const padY = font * 0.2;
       const w = this.text.width + (padX * 2);
       const h = this.text.height + (padY * 2);
       this.labelBox.clear()
-        .lineStyle({width: Math.max(1, font * 0.08), color, alpha: 0.8})
+        .lineStyle({width: outlineWidth(font, 0.08, style, resolution), color, alpha: 0.8})
         .beginFill(0x08050a, 0.72)
         .drawRoundedRect(0, 0, w, h, font * 0.2)
         .endFill();
-      this.text.position.set(padX, padY);
+      this.text.position.set(padX, centredTextY(this.text, h));
       this.labelSize = {w, h};
       this.gap = (radius * 1.2) + (font * 0.3);
     }
@@ -330,9 +326,10 @@ export default class MarkerLayer {
   /**
    * Create, update and remove sprites to match the waypoints.
    * @param {object[]} markers
-   * @param {{size: number, labelSize: number, selected: string|null, resolution: number}} options
+   * @param {{size: number, label: object, selected: string|null, resolution: number}} options
+   *   label: how labels are drawn (see labelStyle)
    */
-  sync(markers, {size, labelSize, selected, resolution=1}) {
+  sync(markers, {size, label, selected, resolution=1}) {
     const ids = new Set(markers.map(m => m.id));
     for ( const [id, sprite] of this.#sprites ) {
       if ( ids.has(id) ) continue;
@@ -346,7 +343,7 @@ export default class MarkerLayer {
         this.#sprites.set(marker.id, sprite);
         this.parent.addChild(sprite.container);
       }
-      sprite.draw(marker, size, labelSize, marker.id === selected, resolution);
+      sprite.draw(marker, size, label, marker.id === selected, resolution);
     }
   }
 

@@ -1,12 +1,9 @@
 import {MEASURE_INK} from "./data.mjs";
+import {centredTextY, outlineWidth, setLabelText} from "./label-style.mjs";
 
 const INK = new PIXI.Color(MEASURE_INK).toNumber();
-const LABEL_STYLE = {
-  fontFamily: "monospace",
-  fill: "#ffe9b0",
-  fontWeight: "bold",
-  letterSpacing: 1
-};
+/** The label text's colour and weight; its font, size and spacing come from the look (see label-style.mjs). */
+const LABEL_STYLE = {fill: "#ffe9b0", fontWeight: "bold"};
 /** Label font size in measurement size units at label size 1, and the smallest font (render-texture pixels). */
 const LABEL_FONT = 0.8;
 const MIN_FONT = 1;
@@ -48,25 +45,25 @@ class MeasureSprite {
   }
 
   /** Redraw the label when its text, size or highlight changes. */
-  draw(text, size, labelSize, selected, resolution) {
-    const key = [text, size, labelSize, selected, resolution].join("|");
+  draw(text, size, style, selected, resolution) {
+    const key = [text, size, JSON.stringify(style), selected, resolution].join("|");
     if ( key === this.key ) return;
     this.key = key;
     // Text is a bitmap: render it at the hologram's resolution, and sharp enough to be scaled up by perspective.
     this.text.resolution = resolution * MAX_SCALE;
-    const font = Math.max(MIN_FONT, Math.round(size * LABEL_FONT * labelSize * 10) / 10);
-    this.text.style.fontSize = font;
-    this.text.text = text;
+    const font = Math.max(MIN_FONT, Math.round(size * LABEL_FONT * style.size * 10) / 10);
+    setLabelText(this.text, text, font, style);
     const padX = font * 0.45;
     const padY = font * 0.2;
     const w = this.text.width + (padX * 2);
     const h = this.text.height + (padY * 2);
     this.box.clear()
-      .lineStyle({width: Math.max(1, font * (selected ? 0.14 : 0.08)), color: INK, alpha: selected ? 1 : 0.65})
+      .lineStyle({width: outlineWidth(font, selected ? 0.14 : 0.08, style, resolution, selected), color: INK,
+        alpha: selected ? 1 : 0.65})
       .beginFill(0x140c06, 0.85)
       .drawRoundedRect(0, 0, w, h, font * 0.2)
       .endFill();
-    this.text.position.set(padX, padY);
+    this.text.position.set(padX, centredTextY(this.text, h));
     this.labelSize = {w, h};
     this.size = size;
   }
@@ -124,12 +121,12 @@ export default class MeasureLayer {
    * Create and remove sprites to match the measurements and update their labels.
    * @param {{id: string, text: string}[]} labels
    * @param {number} size
-   * @param {number} labelSize    Label size setting
+   * @param {object} style    How labels are drawn (see labelStyle)
    * @param {string|null} selected
    * @param {number} [resolution=1]   Device pixels per layout pixel
    * @returns {Map<string, MeasureSprite>}
    */
-  sync(labels, size, labelSize, selected, resolution=1) {
+  sync(labels, size, style, selected, resolution=1) {
     const ids = new Set(labels.map(l => l.id));
     for ( const [id, sprite] of this.#sprites ) {
       if ( ids.has(id) ) continue;
@@ -143,7 +140,7 @@ export default class MeasureLayer {
         this.#sprites.set(id, sprite);
         this.parent.addChild(sprite.container);
       }
-      sprite.draw(text, size, labelSize, id === selected, resolution);
+      sprite.draw(text, size, style, id === selected, resolution);
     }
     return this.#sprites;
   }

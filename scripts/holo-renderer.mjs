@@ -1,4 +1,5 @@
 import AreaLayer from "./area-layer.mjs";
+import {labelStyle} from "./label-style.mjs";
 import {MARKING_RANGES, MEASURE_INK, SIGN_PANELS, SIGN_SCROLLS, SIGN_TILT_RANGE, effectiveDisplay, UNITS, formatArea,
   formatDistance, getHoloData} from "./data.mjs";
 import MarkerLayer, {MAX_SCALE} from "./marker-layer.mjs";
@@ -2346,7 +2347,7 @@ export default class HoloRenderer {
     const size = Math.clamp(Math.min(this.width, this.height) * 0.016, 6, 24);
     const all = [...measures, ...this.#liveMeasures];
     const labels = all.map(({id, points}) => ({id, text: this.#distanceLabel(points)}));
-    this.measureLabels.sync(labels, size, this.#labelSize, this.selectedMeasure, this.resolution);
+    this.measureLabels.sync(labels, size, this.#labelStyle, this.selectedMeasure, this.resolution);
     const project = this.#projector();
     return all.map(({id, points: [ua, va, ub, vb]}) => {
       const from = this.#surfacePosition(ua, va);
@@ -2419,7 +2420,7 @@ export default class HoloRenderer {
       const text = area.label || ((squareMetres === null) ? "◇" : formatArea(squareMetres, this.data.scale.unit));
       return {id: area.id, text, color: area.color};
     });
-    const sprites = this.areaLayer.sync(labels, size, this.#labelSize, this.selectedArea, this.resolution);
+    const sprites = this.areaLayer.sync(labels, size, this.#labelStyle, this.selectedArea, this.resolution);
     const project = this.#projector();
     for ( const area of areas ) {
       const sprite = sprites.get(area.id);
@@ -2784,6 +2785,13 @@ export default class HoloRenderer {
     return {pins: (mode === "all") || (mode === "pins"), measures: (mode === "all") || (mode === "measures")};
   }
 
+  /** How labels are drawn: their size, font and spacing from the look (see labelStyle). */
+  get #labelStyle() {
+    const [min, max] = MARKING_RANGES.labelSpacing;
+    const spacing = Math.clamp(Number(this.data.look.labelSpacing) || 0, min, max);
+    return labelStyle({...this.data.look, labelSpacing: spacing}, this.#labelSize);
+  }
+
   /** The label size setting, within its range. */
   get #labelSize() {
     const [min, max] = MARKING_RANGES.labelSize;
@@ -2808,7 +2816,7 @@ export default class HoloRenderer {
     const {look} = this.data;
     const markers = this.markers;
     const size = Math.clamp(Math.min(this.width, this.height) * 0.022, 7, 32);
-    this.markerLayer.sync(markers, {size, labelSize: this.#labelSize, selected: this.selectedMarker,
+    this.markerLayer.sync(markers, {size, label: this.#labelStyle, selected: this.selectedMarker,
       resolution: this.resolution});
     const [min, max] = MARKING_RANGES.pinHeight;
     const stem = STEM_HEIGHT * Math.clamp(Number(look.pinHeight) || 0, min, max);
@@ -2861,7 +2869,8 @@ export default class HoloRenderer {
     const round = value => Math.round(value * 2);
     const point = p => (p ? `${round(p.x)},${round(p.y)}` : "-");
     const key = [
-      this.#labelSize, this.data.look.labelMode, this.data.look.pinLean, this.selectedMarker, this.selectedMeasure,
+      JSON.stringify(this.#labelStyle), this.data.look.labelMode, this.data.look.pinLean, this.selectedMarker,
+      this.selectedMeasure,
       ...markers.map(m => `${m.id}:${m.size}:${m.label}:${m.labelShow}`),
       ...pins.map(pin => `${pin.id}:${point(pin.head)}:${round(pin.scale * 10)}`),
       ...this.#measureLabelItems.map(item => `${item.id}:${point(item.a)}:${point(item.b)}`),
