@@ -116,13 +116,17 @@
         "labelMode": "Labels shown",
         "labelModeHint": "Hidden labels show while you hover their pin, measurement line or area. The labels glyph on the hologram's tool ring switches this for everyone.",
         "pinHeight": "Pin height",
+        "pinSize": "Pin size",
+        "pinShadow": "Pin shadow",
         "labelSize": "Label size",
         "labelSpacing": "Letter spacing",
         "labelFont": "Label font",
         "labelFontDefault": "Hologram monospace",
         "pinLean": "Lean pins aside",
         "pinLeanHint": "Where labels crowd, a pin whose label has no room upright tips over a little to find some. Off: such labels only fade out (hover a pin to see its label).",
-        "motes": "Data motes"
+        "motes": "Data motes",
+        "shadow": "Shadow",
+        "shadowHint": "Soft dark shadow behind the hologram (and text signs) for contrast over bright maps and lights."
       },
       "Annotations": "Waypoints & drawings",
       "markerCount": "Waypoints",
@@ -188,11 +192,13 @@
       "PortalHint": "Enter shows this map for everyone watching. The label renames the map; drag the portal to move it.",
       "PortalHintPlayer": "Enter shows this map for everyone watching.",
       "Size": {
+        "0": "Extra small",
         "1": "Small",
         "2": "Medium",
         "3": "Large"
       },
       "SizeShort": {
+        "0": "XS",
         "1": "S",
         "2": "M",
         "3": "L"
@@ -241,6 +247,8 @@
       "RecenterUpHint": "After going up to a parent map the view ends centred, easing there from the spot you left, instead of staying on that spot. Set per tile.",
       "OwnLook": "Own look for this map",
       "OwnLookHint": "Off: this map is shown with the hologram's look. On: changes below are saved with the map and shown on any hologram that travels here.",
+      "OwnShadow": "Own shadow for this map",
+      "OwnShadowHint": "Off: the shadow is the hologram's. On: saved with the map and used on any hologram showing it.",
       "OwnMarkings": "Own pin and label settings for this map",
       "OwnMarkingsHint": "Off: these pin and label settings are the hologram's. On: the settings above are saved with the map and used on any hologram showing it.",
       "Circular": "A map can't be placed on itself or on a map inside it."

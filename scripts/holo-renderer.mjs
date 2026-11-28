@@ -29,13 +29,15 @@ const MIN_RENDER_PIXELS = 512;
 const MAX_SUPERSAMPLE = 2;
 /** Largest render texture side, whatever the GPU allows. */
 const MAX_RENDER_SIZE = 8192;
+/** Largest side of the small offscreen textures used to blur the whole-hologram soft shadow. */
+const MAX_SHADOW_SIZE = 384;
 const DISC_RADIUS = 1.08;
 /** One scanline per this many scene pixels of tile height. */
 const SCANLINE_SPACING = 6;
 /** Waypoint stem height, in footprint units. */
 const STEM_HEIGHT = 0.16;
 /** Stem height per pin size tier, as a fraction of STEM_HEIGHT. */
-const STEM_TIERS = {1: 0.6, 2: 0.8, 3: 1};
+const STEM_TIERS = {0: 0.45, 1: 0.6, 2: 0.8, 3: 1};
 /** Smallest perspective scale pins and labels are drawn at (the largest is MAX_SCALE). */
 const MIN_SCALE = 0.75;
 /** How long everything labels are laid out around must hold still before they're laid out afresh. */
@@ -850,6 +852,80 @@ void main() {
   fragColor = vec4(rgb, 1.0) * inside * volumeFade();
 }`;
 
+/**
+ * Whole-hologram soft shadow: extract a silhouette mask from the rendered frame (alpha + bright emitted pixels,
+ * ignoring faint light-beam haze), separable Gaussian blur in small scratch textures, then composite dark alpha
+ * underneath via DST_OVER so the bright map dims behind the hologram without muddying its emitted light.
+ */
+const SHADOW_VERTEX = `
+precision highp float;
+attribute vec2 aVertexPosition;
+varying vec2 vUV;
+void main() {
+  vUV = aVertexPosition * 0.5 + 0.5;
+  gl_Position = vec4(aVertexPosition, 0.0, 1.0);
+}`;
+
+const SHADOW_EXTRACT_FRAGMENT = `
+precision highp float;
+varying vec2 vUV;
+uniform sampler2D uSource;
+uniform vec2 uScale;
+uniform vec2 uMaxUV;
+uniform vec2 uStep;
+float mask(vec2 uv) {
+  vec4 c = texture2D(uSource, clamp(uv, vec2(0.0), uMaxUV));
+  float lum = max(c.r, max(c.g, c.b));
+  return clamp(max(c.a, smoothstep(0.08, 0.45, lum)), 0.0, 1.0);
+}
+void main() {
+  vec2 uv = vUV * uScale;
+  float m0 = mask(uv + vec2(-uStep.x, -uStep.y));
+  float m1 = mask(uv + vec2( uStep.x, -uStep.y));
+  float m2 = mask(uv + vec2(-uStep.x,  uStep.y));
+  float m3 = mask(uv + vec2( uStep.x,  uStep.y));
+  // Preserve thin wireframe lines and narrow text strokes across downsampling instead of averaging them away.
+  float m = max(max(m0, m1), max(m2, m3));
+  gl_FragColor = vec4(0.0, 0.0, 0.0, m);
+}`;
+
+const SHADOW_BLUR_FRAGMENT = `
+precision highp float;
+varying vec2 vUV;
+uniform sampler2D uSource;
+uniform vec2 uScale;
+uniform vec2 uMaxUV;
+uniform vec2 uDir;
+float tap(vec2 uv) {
+  if ( (uv.x < 0.0) || (uv.y < 0.0) || (uv.x > uScale.x) || (uv.y > uScale.y) ) return 0.0;
+  return texture2D(uSource, min(uv, uMaxUV)).a;
+}
+void main() {
+  vec2 uv = vUV * uScale;
+  float s = tap(uv) * 0.1556;
+  s += (tap(uv - uDir * 1.0) + tap(uv + uDir * 1.0)) * 0.1442;
+  s += (tap(uv - uDir * 2.0) + tap(uv + uDir * 2.0)) * 0.1155;
+  s += (tap(uv - uDir * 3.0) + tap(uv + uDir * 3.0)) * 0.0798;
+  s += (tap(uv - uDir * 4.0) + tap(uv + uDir * 4.0)) * 0.0475;
+  s += (tap(uv - uDir * 5.0) + tap(uv + uDir * 5.0)) * 0.0244;
+  s += (tap(uv - uDir * 6.0) + tap(uv + uDir * 6.0)) * 0.0108;
+  gl_FragColor = vec4(0.0, 0.0, 0.0, s);
+}`;
+
+const SHADOW_COMPOSITE_FRAGMENT = `
+precision highp float;
+varying vec2 vUV;
+uniform sampler2D uShadow;
+uniform vec2 uScale;
+uniform vec2 uMaxUV;
+uniform float uStrength;
+${VOLUME}
+void main() {
+  float s = texture2D(uShadow, min(vUV * uScale, uMaxUV)).a;
+  float a = clamp(1.0 - exp(-s * 4.5), 0.0, 1.0) * uStrength * 0.94 * volumeFade();
+  gl_FragColor = vec4(0.0, 0.0, 0.0, a);
+}`;
+
 let programs;
 function getPrograms() {
   programs ??= {
@@ -863,9 +939,19 @@ function getPrograms() {
     signBeam: PIXI.Program.from(SIGN_PART_VERTEX, SIGN_BEAM_FRAGMENT, "vira-holo-sign-beam"),
     signFloor: PIXI.Program.from(SIGN_PART_VERTEX, SIGN_FLOOR_FRAGMENT, "vira-holo-sign-floor"),
     signBase: PIXI.Program.from(SIGN_PART_VERTEX, SIGN_BASE_FRAGMENT, "vira-holo-sign-base"),
-    signRays: PIXI.Program.from(SIGN_RAY_VERTEX, SIGN_RAY_FRAGMENT, "vira-holo-sign-rays")
+    signRays: PIXI.Program.from(SIGN_RAY_VERTEX, SIGN_RAY_FRAGMENT, "vira-holo-sign-rays"),
+    shadowExtract: PIXI.Program.from(SHADOW_VERTEX, SHADOW_EXTRACT_FRAGMENT, "vira-holo-shadow-extract"),
+    shadowBlur: PIXI.Program.from(SHADOW_VERTEX, SHADOW_BLUR_FRAGMENT, "vira-holo-shadow-blur"),
+    shadowComposite: PIXI.Program.from(SHADOW_VERTEX, SHADOW_COMPOSITE_FRAGMENT, "vira-holo-shadow-composite")
   };
   return programs;
+}
+
+/** Fullscreen clip-space quad for post-process passes. */
+function createScreenQuad() {
+  return new PIXI.Geometry()
+    .addAttribute("aVertexPosition", new Float32Array([-1, -1, 1, -1, 1, 1, -1, 1]), 2)
+    .addIndex(new Uint16Array([0, 1, 2, 0, 2, 3]));
 }
 
 /** Corner order: far-left, far-right, near-right, near-left. */
@@ -1232,6 +1318,8 @@ export default class HoloRenderer {
   /** The table texture and whether it was drawn with a hole; built when first needed. */
   #tableTexture = null;
   #tableHoleDrawn = null;
+  /** Scratch resources for the whole-hologram soft shadow; built lazily only when look.shadow > 0. */
+  #shadowPass = null;
 
   /** Strokes and measurement lines go on top of the content, then waypoints and labels. */
   #addOverlays() {
@@ -2101,9 +2189,114 @@ export default class HoloRenderer {
     // Fully off, only the off state is drawn.
     const keep = [this.offGraphics, this.tableMesh, this.#sign?.floorMesh, this.#sign?.baseMesh];
     const hidden = (this.#power > 0) ? [] : this.stage.children.filter(c => !keep.includes(c) && c.visible);
-    for ( const child of hidden ) child.visible = false;
+    // Volumetric light cones/rays on signs shouldn't cast a dark shadow: draw them after the shadow pass.
+    const strength = this.#shadow * (this.#sign ? this.#powerEase : 1);
+    const deferred = (this.#sign && (strength > 0.001))
+      ? [this.#sign.beamMesh, this.#sign.rayMesh].filter(m => m.visible && !hidden.includes(m))
+      : [];
+    for ( const child of [...hidden, ...deferred] ) child.visible = false;
     renderer.render(this.stage, {renderTexture: this.renderTexture, clear: true, transform});
-    for ( const child of hidden ) child.visible = true;
+    for ( const child of [...hidden, ...deferred] ) child.visible = true;
+    if ( strength > 0.001 ) {
+      this.#renderShadow(renderer, strength);
+      for ( const mesh of deferred ) renderer.render(mesh, {renderTexture: this.renderTexture, clear: false, transform});
+    }
+  }
+
+  /**
+   * Tuck a soft dark shadow underneath the rendered hologram (in this.renderTexture) so it stays legible over bright
+   * backgrounds and Foundry lighting without darkening its own emitted light or boxing frameless signs.
+   */
+  #renderShadow(renderer, strength) {
+    const pass = this.#ensureShadowPass();
+    const {width: fw, height: fh} = this.renderTexture.frame;
+    const {width: bw, height: bh} = this.renderTexture.baseTexture;
+    if ( (fw < 2) || (fh < 2) ) return;
+    const scale = Math.min(0.5, MAX_SHADOW_SIZE / Math.max(fw, fh, 1));
+    const sw = Math.max(2, Math.ceil(fw * scale));
+    const sh = Math.max(2, Math.ceil(fh * scale));
+    this.#sizeShadowRT(pass.a, sw, sh);
+    this.#sizeShadowRT(pass.b, sw, sh);
+
+    const extract = pass.extract.shader.uniforms;
+    extract.uSource = this.renderTexture;
+    extract.uScale.set([fw / bw, fh / bh]);
+    extract.uMaxUV.set([Math.max(0, (fw - 0.5) / bw), Math.max(0, (fh - 0.5) / bh)]);
+    extract.uStep.set([0.25 * (fw / sw) / bw, 0.25 * (fh / sh) / bh]);
+    renderer.render(pass.extract, {renderTexture: pass.a, clear: true});
+
+    const sbw = pass.a.baseTexture.width;
+    const sbh = pass.a.baseTexture.height;
+    const sScale = [sw / sbw, sh / sbh];
+    const sMaxUV = [Math.max(0, (sw - 0.5) / sbw), Math.max(0, (sh - 0.5) / sbh)];
+    const radiusLayout = Math.clamp(Math.min(this.width, this.height) * 0.022, 6, 28);
+    const targetSigma = radiusLayout * this.resolution * (sw / fw) * 0.45;
+    const passes = (targetSigma <= 5) ? 1 : ((targetSigma <= 10) ? 2 : 3);
+    const step = Math.min(targetSigma / (2.6 * Math.sqrt(passes)), 3);
+    const blur = pass.blur.shader.uniforms;
+    blur.uScale.set(sScale);
+    blur.uMaxUV.set(sMaxUV);
+    for ( let i = 0; i < passes; i++ ) {
+      blur.uSource = pass.a;
+      blur.uDir.set([step / sbw, 0]);
+      renderer.render(pass.blur, {renderTexture: pass.b, clear: true});
+      blur.uSource = pass.b;
+      blur.uDir.set([0, step / sbh]);
+      renderer.render(pass.blur, {renderTexture: pass.a, clear: true});
+    }
+
+    const composite = pass.composite.shader.uniforms;
+    composite.uShadow = pass.a;
+    composite.uScale.set(sScale);
+    composite.uMaxUV.set(sMaxUV);
+    composite.uStrength = strength;
+    renderer.render(pass.composite, {renderTexture: this.renderTexture, clear: false});
+  }
+
+  #ensureShadowPass() {
+    if ( this.#shadowPass ) return this.#shadowPass;
+    const {shadowExtract, shadowBlur, shadowComposite} = getPrograms();
+    const quad = createScreenQuad();
+    const copyState = new PIXI.State();
+    copyState.blend = false;
+    const compositeState = new PIXI.State();
+    compositeState.blendMode = PIXI.BLEND_MODES.DST_OVER;
+    const extractShader = new PIXI.Shader(shadowExtract, {
+      uSource: PIXI.Texture.EMPTY, uScale: new Float32Array(2), uMaxUV: new Float32Array(2), uStep: new Float32Array(2)
+    });
+    const blurShader = new PIXI.Shader(shadowBlur, {
+      uSource: PIXI.Texture.EMPTY, uScale: new Float32Array(2), uMaxUV: new Float32Array(2), uDir: new Float32Array(2)
+    });
+    const compositeShader = new PIXI.Shader(shadowComposite, {
+      uShadow: PIXI.Texture.EMPTY, uScale: new Float32Array(2), uMaxUV: new Float32Array(2), uStrength: 0,
+      uVolume: this.volumeUniform, uFrag: this.fragUniform
+    });
+    this.#shadowPass = {
+      quad,
+      a: PIXI.RenderTexture.create({width: 64, height: 64}),
+      b: PIXI.RenderTexture.create({width: 64, height: 64}),
+      extract: new PIXI.Mesh(quad, extractShader, copyState),
+      blur: new PIXI.Mesh(quad, blurShader, copyState),
+      composite: new PIXI.Mesh(quad, compositeShader, compositeState)
+    };
+    return this.#shadowPass;
+  }
+
+  #sizeShadowRT(rt, w, h) {
+    const base = rt.baseTexture;
+    const grow = (base.width < w) || (base.height < h);
+    const shrink = (base.width * base.height) > (4 * Math.max(w * h, 64 * 64));
+    const bucket = n => Math.ceil(n / 64) * 64;
+    if ( !grow ) {
+      rt.frame = new PIXI.Rectangle(0, 0, w, h);
+      rt.updateUvs();
+    }
+    if ( grow ) base.resize(Math.max(base.width, bucket(w)), Math.max(base.height, bucket(h)));
+    else if ( shrink ) base.resize(bucket(w), bucket(h));
+    if ( grow ) {
+      rt.frame = new PIXI.Rectangle(0, 0, w, h);
+      rt.updateUvs();
+    }
   }
 
   /* -------------------------------------------- */
@@ -2798,6 +2991,26 @@ export default class HoloRenderer {
     return Math.clamp(Number(this.data.look.labelSize) || 1, min, max);
   }
 
+  /** The pin scale setting, within its range. */
+  get #pinSize() {
+    const [min, max] = MARKING_RANGES.pinSize;
+    const value = Number(this.data.look.pinSize);
+    return Number.isFinite(value) ? Math.clamp(value, min, max) : 1;
+  }
+
+  /** The per-pin dark shadow strength, within its range. */
+  get #pinShadow() {
+    const [min, max] = MARKING_RANGES.pinShadow;
+    const value = Number(this.data.look.pinShadow);
+    return Number.isFinite(value) ? Math.clamp(value, min, max) : 0;
+  }
+
+  /** The whole-hologram soft shadow strength (0..1). */
+  get #shadow() {
+    const value = Number(this.data.look.shadow);
+    return Number.isFinite(value) ? Math.clamp(value, 0, 1) : 0;
+  }
+
   /**
    * How much bigger than usual a pin or label at this depth is drawn: as perspective would have it (1 at the depth
    * the camera looks at), within limits so far ones stay readable and near ones don't crowd the rest.
@@ -2816,8 +3029,8 @@ export default class HoloRenderer {
     const {look} = this.data;
     const markers = this.markers;
     const size = Math.clamp(Math.min(this.width, this.height) * 0.022, 7, 32);
-    this.markerLayer.sync(markers, {size, label: this.#labelStyle, selected: this.selectedMarker,
-      resolution: this.resolution});
+    this.markerLayer.sync(markers, {size, pinSize: this.#pinSize, pinShadow: this.#pinShadow, label: this.#labelStyle,
+      selected: this.selectedMarker, resolution: this.resolution});
     const [min, max] = MARKING_RANGES.pinHeight;
     const stem = STEM_HEIGHT * Math.clamp(Number(look.pinHeight) || 0, min, max);
     const project = this.#projector();
@@ -2869,8 +3082,8 @@ export default class HoloRenderer {
     const round = value => Math.round(value * 2);
     const point = p => (p ? `${round(p.x)},${round(p.y)}` : "-");
     const key = [
-      JSON.stringify(this.#labelStyle), this.data.look.labelMode, this.data.look.pinLean, this.selectedMarker,
-      this.selectedMeasure,
+      JSON.stringify(this.#labelStyle), this.#pinSize, this.data.look.labelMode, this.data.look.pinLean,
+      this.selectedMarker, this.selectedMeasure,
       ...markers.map(m => `${m.id}:${m.size}:${m.label}:${m.labelShow}`),
       ...pins.map(pin => `${pin.id}:${point(pin.head)}:${round(pin.scale * 10)}`),
       ...this.#measureLabelItems.map(item => `${item.id}:${point(item.a)}:${point(item.b)}`),
@@ -3040,6 +3253,13 @@ export default class HoloRenderer {
     this.moteMesh.destroy();
     this.stage.destroy({children: true});
     destroyGeometries(this.discGeometry, this.panelGeometry, this.moteGeometry, this.tableGeometry);
+    if ( this.#shadowPass ) {
+      for ( const mesh of [this.#shadowPass.extract, this.#shadowPass.blur, this.#shadowPass.composite] ) mesh.destroy();
+      destroyGeometries(this.#shadowPass.quad);
+      this.#shadowPass.a.destroy(true);
+      this.#shadowPass.b.destroy(true);
+      this.#shadowPass = null;
+    }
     this.#tableTexture?.destroy(true);
     this.texture.destroy(false);
     this.renderTexture.destroy(true);

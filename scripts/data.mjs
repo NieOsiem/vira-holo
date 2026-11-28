@@ -48,10 +48,14 @@ export const DEFAULTS = Object.freeze({
     north: true,
     /** Density of the specks of light rising through the hologram (0 = none). */
     motes: 0.5,
+    /** Soft dark shadow behind the whole hologram (0 = none), for contrast over bright maps and lights. */
+    shadow: 0,
     /** Which labels are shown (LABEL_MODES); the others show while hovered. */
     labelMode: "all",
-    /** Pin stem height and label size (pins, measurements and areas), as multiples of the usual. See MARKING_RANGES. */
+    /** Pin stem height, pin scale, pin shadow and label size (pins, measurements and areas). See MARKING_RANGES. */
     pinHeight: 1,
+    pinSize: 1,
+    pinShadow: 0.45,
     labelSize: 1,
     /** Whether pins may lean aside to find their label room when nothing upright is free. */
     pinLean: true,
@@ -219,8 +223,13 @@ export function mapChildren(uuid) {
 /**
  * Slider ranges [min, max, step] of the pin and label settings a hologram (`look`) or a map (`state.markings`) sets.
  */
-export const MARKING_RANGES = Object.freeze({pinHeight: [0, 3, 0.05], labelSize: [0.3, 2.5, 0.05],
-  labelSpacing: [0, 0.5, 0.01]});
+export const MARKING_RANGES = Object.freeze({
+  pinHeight: [0, 3, 0.05],
+  pinSize: [0.3, 2.5, 0.05],
+  pinShadow: [0, 1, 0.05],
+  labelSize: [0.3, 2.5, 0.05],
+  labelSpacing: [0, 0.5, 0.01]
+});
 /** The pin and label settings of the look a map may have its own of: the sliders', pin leaning, labels and font. */
 export const MARKING_KEYS = Object.freeze([...Object.keys(MARKING_RANGES), "pinLean", "labelMode", "labelFont"]);
 const MAX_FONT_NAME = 100;
@@ -251,10 +260,18 @@ function mapMarkings(state) {
   return markings;
 }
 
+/** A map's own hologram shadow, which overrides the hologram's look wherever the map is shown; null if it has none. */
+function mapShadow(state) {
+  if ( state.shadow === undefined ) return null;
+  const value = Number(state.shadow);
+  return Number.isFinite(value) ? Math.clamp(value, 0, 1) : DEFAULTS.look.shadow;
+}
+
 /** What the hologram data says about the map shown: see getHoloData. */
 function mapInfo(journal, home) {
   if ( !journal ) {
-    return {uuid: null, name: null, home: true, ownLook: false, markings: null, parent: null, position: null, children: []};
+    return {uuid: null, name: null, home: true, ownLook: false, shadow: null, markings: null, parent: null,
+      position: null, children: []};
   }
   const state = journal.getFlag(MODULE_ID, "state");
   const parent = getStateJournal(state.parent?.uuid);
@@ -263,6 +280,7 @@ function mapInfo(journal, home) {
     name: journal.name,
     home,
     ownLook: !home && !!state.look,
+    shadow: mapShadow(state),
     markings: mapMarkings(state),
     parent: parent ? {uuid: parent.uuid, name: parent.name} : null,
     position: parent ? {u: Math.clamp(Number(state.parent.u) || 0, 0, 1), v: Math.clamp(Number(state.parent.v) || 0, 0, 1)}
@@ -322,6 +340,7 @@ export function getHoloData(doc) {
   data.link = link ? {uuid: link.journal.uuid, name: link.journal.name, share: link.share} : null;
   data.linkMissing = !link && !!doc.flags?.[MODULE_ID]?.link?.uuid;
   data.map = mapInfo(away ?? home, !away);
+  if ( data.map.shadow !== null ) data.look.shadow = data.map.shadow;
   if ( data.map.markings ) Object.assign(data.look, data.map.markings);
   data.imageFromTile = !away && !home;
   return data;
@@ -368,8 +387,8 @@ const MAX_IMAGE_PATH = 1024;
 export const LABEL_SHOWS = Object.freeze(["auto", "hover", "always"]);
 export const MAX_MARKERS = 64;
 export const MAX_LABEL_LENGTH = 32;
-/** Pin size tiers: tier → scale of the largest pin. */
-export const MARKER_SIZES = Object.freeze({1: 0.5, 2: 0.72, 3: 1});
+/** Pin size tiers: tier → scale of the largest pin (0 = XS, 1 = S, 2 = M, 3 = L). */
+export const MARKER_SIZES = Object.freeze({0: 0.35, 1: 0.5, 2: 0.72, 3: 1});
 /** Every edit rewrites the whole stroke list (like waypoints), so keep it bounded. */
 export const MAX_STROKES = 100;
 export const MAX_STROKE_POINTS = 400;

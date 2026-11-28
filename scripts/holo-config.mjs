@@ -153,6 +153,8 @@ export default class HoloConfig extends HandlebarsApplicationMixin(DocumentSheet
       fromJournal: holo.text.source === "journal",
       journalName: journalLabel(holo.text.journal),
       lookSliders: sliders("look"),
+      shadowField: (holo.map.shadow !== null) ? `flags.${MODULE_ID}.map.shadow` : `flags.${MODULE_ID}.look.shadow`,
+      ownShadow: holo.map.shadow !== null,
       terrainSliders: sliders("terrain"),
       displayModes: Object.fromEntries(allowedDisplays(holo.terrain).map(m => [m, localize(`VIRAHOLO.Display.${m}`)])),
       offStyles: Object.fromEntries(OFF_STYLES.map(s => [s, localize(`VIRAHOLO.OffStyle.${s}`)])),
@@ -220,6 +222,7 @@ export default class HoloConfig extends HandlebarsApplicationMixin(DocumentSheet
     const current = foundry.utils.flattenObject({flags: {[MODULE_ID]: holo}});
     // Map fields (under "map", like the hologram data's description of the map) edit the map's journal instead.
     current[`flags.${MODULE_ID}.map.parentUuid`] = holo.map.parent?.uuid ?? "";
+    current[`flags.${MODULE_ID}.map.ownShadow`] = holo.map.shadow !== null;
     current[`flags.${MODULE_ID}.map.ownMarkings`] = !!holo.map.markings;
     // v14 renamed objectsEqual to equals (which also compares primitives and arrays).
     const equals = foundry.utils.equals ?? ((a, b) => foundry.utils.objectsEqual({v: a}, {v: b}));
@@ -245,7 +248,7 @@ export default class HoloConfig extends HandlebarsApplicationMixin(DocumentSheet
    * Rename the map shown, move it to another parent, give it its own look or its own pin and label settings (or drop
    * them), or change those settings.
    */
-  async #updateMap({name, parentUuid, ownLook, ownMarkings, markings}) {
+  async #updateMap({name, parentUuid, ownLook, ownShadow, shadow, ownMarkings, markings}) {
     const data = getHoloData(this.document);
     const map = getStateJournal(data.map.uuid);
     if ( !map ) return;
@@ -254,6 +257,14 @@ export default class HoloConfig extends HandlebarsApplicationMixin(DocumentSheet
     if ( ownLook !== undefined ) {
       const path = `flags.${MODULE_ID}.state.look`;
       await map.update(ownLook ? {[path]: foundry.utils.deepClone(data.look)} : deletionUpdate(path));
+    }
+    const shadowPath = `flags.${MODULE_ID}.state.shadow`;
+    if ( ownShadow !== undefined ) {
+      await map.update(ownShadow ? {[shadowPath]: data.look.shadow} : deletionUpdate(shadowPath));
+    }
+    else if ( shadow !== undefined ) {
+      const value = Number(shadow);
+      if ( Number.isFinite(value) ) await map.update({[shadowPath]: Math.clamp(value, 0, 1)});
     }
     const path = `flags.${MODULE_ID}.state.markings`;
     if ( ownMarkings !== undefined ) {
