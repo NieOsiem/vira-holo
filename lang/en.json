@@ -163,7 +163,20 @@
         "diamond": "Diamond",
         "triangle": "Triangle",
         "circle": "Circle",
-        "square": "Square"
+        "square": "Square",
+        "image": "Image: pick any picture (white icons recolour best)"
+      },
+      "ImageNoPermission": "Picking an image needs permission to browse files",
+      "Tint": "Recolour the image with the ink",
+      "Show": {
+        "auto": "Label shown wherever there's room for it",
+        "hover": "Label shown only while the pin is hovered or selected",
+        "always": "Label always shown: other labels make way for it"
+      },
+      "ShowShort": {
+        "auto": "Auto",
+        "hover": "Hover",
+        "always": "Always"
       },
       "Lock": "Lock: can't be dragged",
       "HintLocked": "Locked: unlock it to drag it again.",

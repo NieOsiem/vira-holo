@@ -72,8 +72,9 @@ export const DEFAULTS = Object.freeze({
   },
   annotations: {
     /**
-     * Waypoints: {id, u, v, label, glyph, color, size, locked}. u/v is the position on the image (0..1, top-left
-     * origin); size is a tier from 1 (small) to 3 (large); locked pins can't be dragged.
+     * Waypoints: {id, u, v, label, glyph, color, size, locked, image, tint, labelShow}. u/v is the position on the
+     * image (0..1, top-left origin); size is a tier from 1 (small) to 3 (large); locked pins can't be dragged. The
+     * "image" glyph is `image` (a path), recoloured with the ink if `tint`; labelShow is one of LABEL_SHOWS.
      */
     markers: [],
     /**
@@ -192,20 +193,22 @@ export function getMaps(doc, link=getLink(doc)) {
 }
 
 /**
- * Maps placed on a map, as {uuid, id, name, u, v, size, color, locked}: their spot on its image and how their portal
- * looks there (size tier like a waypoint's; color null = the hologram's colour; locked = GMs can't drag it either).
+ * Maps placed on a map, as {uuid, id, name, u, v, size, color, locked, labelShow}: their spot on its image and how
+ * their portal looks there (size tier like a waypoint's; color null = the hologram's colour; locked = GMs can't drag
+ * it either; labelShow like a waypoint's).
  */
 export function mapChildren(uuid) {
   if ( !uuid ) return [];
   return game.journal.filter(j => j.getFlag(MODULE_ID, "state")?.parent?.uuid === uuid).map(j => {
-    const {u, v, size, color, locked} = j.getFlag(MODULE_ID, "state").parent;
+    const {u, v, size, color, locked, labelShow} = j.getFlag(MODULE_ID, "state").parent;
     return {
       uuid: j.uuid, id: j.id, name: j.name,
       u: Math.clamp(Number(u) || 0, 0, 1),
       v: Math.clamp(Number(v) || 0, 0, 1),
       size: (size in MARKER_SIZES) ? Number(size) : 3,
       color: /^#[0-9a-f]{6}$/i.test(color) ? color : null,
-      locked: locked === true
+      locked: locked === true,
+      labelShow: LABEL_SHOWS.includes(labelShow) ? labelShow : LABEL_SHOWS[0]
     };
   });
 }
@@ -349,6 +352,11 @@ export function defaultCamera(mode) {
 /** Waypoint inks, as in the mockup: amber, ember, gold, alert, verify, arcane. */
 export const INKS = Object.freeze(["#ffb020", "#ff7a1a", "#ffe066", "#ff4d5e", "#8dff57", "#5b8cff"]);
 export const MARKER_GLYPHS = Object.freeze(["diamond", "triangle", "circle", "square"]);
+/** The glyph of a pin shown as an image of the user's choosing (see sanitizeMarker). */
+export const IMAGE_GLYPH = "image";
+const MAX_IMAGE_PATH = 1024;
+/** When a pin's label shows: wherever there's room for it ("auto"), only while hovered or selected, or always. */
+export const LABEL_SHOWS = Object.freeze(["auto", "hover", "always"]);
 export const MAX_MARKERS = 64;
 export const MAX_LABEL_LENGTH = 32;
 /** Pin size tiers: tier → scale of the largest pin. */
@@ -471,19 +479,24 @@ export function formatArea(squareMetres, unit) {
   return `${format(squareMetres / (UNITS[small].metres ** 2), 0)} ${label(small)}²`;
 }
 
+/** A waypoint with every field checked and coerced; null without an ID or a position. An image glyph needs an image. */
 export function sanitizeMarker(marker) {
-  const {id, u, v, label, glyph, color, size, locked} = marker ?? {};
+  const {id, u, v, label, glyph, color, size, locked, tint, labelShow} = marker ?? {};
   if ( (typeof id !== "string") || !/^[a-zA-Z0-9]{16}$/.test(id) ) return null;
   if ( !Number.isFinite(u) || !Number.isFinite(v) ) return null;
+  const image = (typeof marker.image === "string") ? marker.image.trim().slice(0, MAX_IMAGE_PATH) : "";
   return {
     id,
     u: Math.clamp(u, 0, 1),
     v: Math.clamp(v, 0, 1),
     label: String(label ?? "").slice(0, MAX_LABEL_LENGTH),
-    glyph: MARKER_GLYPHS.includes(glyph) ? glyph : MARKER_GLYPHS[0],
+    glyph: (MARKER_GLYPHS.includes(glyph) || ((glyph === IMAGE_GLYPH) && image)) ? glyph : MARKER_GLYPHS[0],
     color: /^#[0-9a-f]{6}$/i.test(color) ? color : INKS[0],
     size: (size in MARKER_SIZES) ? Number(size) : 3,
-    locked: locked === true
+    locked: locked === true,
+    image,
+    tint: tint !== false,
+    labelShow: LABEL_SHOWS.includes(labelShow) ? labelShow : LABEL_SHOWS[0]
   };
 }
 

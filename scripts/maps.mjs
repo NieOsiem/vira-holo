@@ -1,4 +1,4 @@
-import {DEFAULTS, MARKER_SIZES, MAX_LABEL_LENGTH, MODULE_ID, deletionUpdate, getHoloData, getLink, getMaps,
+import {DEFAULTS, LABEL_SHOWS, MARKER_SIZES, MAX_LABEL_LENGTH, MODULE_ID, deletionUpdate, getHoloData, getLink, getMaps,
   getStateJournal} from "./data.mjs";
 import {createLink, createStateJournal} from "./links.mjs";
 
@@ -91,7 +91,7 @@ export async function moveMap(uuid, {u, v}) {
  * @param {string} uuid
  * @param {{label?: string, size?: number, color?: string, locked?: boolean}} changes
  */
-export async function updatePortal(uuid, {label, size, color, locked}) {
+export async function updatePortal(uuid, {label, size, color, locked, labelShow}) {
   const map = getStateJournal(uuid);
   if ( !map?.getFlag(MODULE_ID, "state").parent ) return;
   const update = {};
@@ -101,6 +101,7 @@ export async function updatePortal(uuid, {label, size, color, locked}) {
   if ( size in MARKER_SIZES ) update[`${path}.size`] = Number(size);
   if ( /^#[0-9a-f]{6}$/i.test(color) ) update[`${path}.color`] = color;
   if ( typeof locked === "boolean" ) update[`${path}.locked`] = locked;
+  if ( LABEL_SHOWS.includes(labelShow) ) update[`${path}.labelShow`] = labelShow;
   if ( !foundry.utils.isEmpty(update) ) return map.update(update);
 }
 

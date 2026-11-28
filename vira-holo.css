@@ -178,8 +178,10 @@
   border-color: var(--accent);
   box-shadow: 0 0 8px color-mix(in srgb, var(--accent) 35%, transparent);
 }
+.vira-holo-card [hidden] { display: none !important; }
 .vira-holo-card .glyphs,
 .vira-holo-card .sizes,
+.vira-holo-card .shows,
 .vira-holo-card .inks,
 .vira-holo-card .actions {
   position: relative;
@@ -188,7 +190,8 @@
   margin-bottom: 7px;
 }
 .vira-holo-card .glyphs button,
-.vira-holo-card .sizes button {
+.vira-holo-card .sizes button,
+.vira-holo-card .shows button {
   flex: 1;
   height: 24px;
   text-align: center;
@@ -199,17 +202,38 @@
   font-size: 11px;
   line-height: 22px;
 }
-.vira-holo-card .sizes button {
+.vira-holo-card .sizes button,
+.vira-holo-card .shows button {
   height: 20px;
+  text-transform: uppercase;
   font-size: 9px;
   letter-spacing: 1.2px;
   line-height: 18px;
 }
-.vira-holo-card .glyphs button:hover,
-.vira-holo-card .sizes button:hover { color: #fff; border-color: #ffd9a0; }
+.vira-holo-card .glyphs button:hover:not([disabled]),
+.vira-holo-card .sizes button:hover,
+.vira-holo-card .shows button:hover { color: #fff; border-color: #ffd9a0; }
+.vira-holo-card .glyphs button[disabled] { opacity: 0.35; }
+.vira-holo-card .glyphs button.picture {
+  display: grid;
+  place-items: center;
+}
+/* The pin's picture; recoloured with its ink (as a mask), like on the hologram, unless that's off. */
+.vira-holo-card .glyphs .thumb {
+  width: 16px;
+  height: 16px;
+  background: var(--thumb) center / contain no-repeat;
+}
+.vira-holo-card .glyphs .thumb.tinted {
+  background: var(--pin-ink);
+  -webkit-mask: var(--thumb) center / contain no-repeat;
+  mask: var(--thumb) center / contain no-repeat;
+}
 .vira-holo-card .glyphs button.on,
 .vira-holo-card .sizes button.on,
-.vira-holo-card .actions button.lock.on {
+.vira-holo-card .shows button.on,
+.vira-holo-card .actions button.lock.on,
+.vira-holo-card .actions button.tint.on {
   color: var(--accent);
   border-color: var(--accent);
   background: color-mix(in srgb, var(--accent) 16%, transparent);
@@ -252,7 +276,8 @@
   border-color: var(--accent);
   box-shadow: 0 0 8px color-mix(in srgb, var(--accent) 30%, transparent);
 }
-.vira-holo-card .actions button.lock {
+.vira-holo-card .actions button.lock,
+.vira-holo-card .actions button.tint {
   flex: 0 0 26px;
   font-size: 10px;
 }
@@ -268,6 +293,7 @@
 /* Portals: no glyph choice; players only get Focus and Enter. */
 .vira-holo-card.portal .glyphs,
 .vira-holo-card.readonly .sizes,
+.vira-holo-card.readonly .shows,
 .vira-holo-card.readonly .inks,
 .vira-holo-card.readonly .actions button.lock { display: none; }
 .vira-holo-card .actions button.enter {

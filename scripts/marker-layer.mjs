@@ -1,4 +1,4 @@
-import {MARKER_SIZES} from "./data.mjs";
+import {IMAGE_GLYPH, MARKER_SIZES} from "./data.mjs";
 
 /** Glyph outlines as points on a unit circle; circle is drawn as a circle. */
 const GLYPH_SHAPES = {
@@ -54,6 +54,12 @@ class MarkerSprite {
     this.stem = new PIXI.Graphics();
     this.ground = new PIXI.Graphics();
     this.head = new PIXI.Graphics();
+    /** An image glyph's picture, on the head (so it moves and scales with it); its texture is Foundry's cache's. */
+    this.icon = new PIXI.Sprite(PIXI.Texture.EMPTY);
+    this.icon.anchor.set(0.5);
+    this.icon.visible = false;
+    this.iconSrc = null;
+    this.head.addChild(this.icon);
     this.label = new PIXI.Container();
     this.labelBox = new PIXI.Graphics();
     this.text = new PIXI.Text("", LABEL_STYLE);
@@ -62,6 +68,8 @@ class MarkerSprite {
     this.container.addChild(this.ground, this.stem, this.head, this.label);
     this.key = "";
     this.hasLabel = false;
+    /** When the label shows (LABEL_SHOWS). */
+    this.labelShow = "auto";
     /** Layout: the place (index into PLACES) the label is given, and whether it's shown at all. */
     this.place = 0;
     this.shown = false;
@@ -80,7 +88,9 @@ class MarkerSprite {
 
   /** Redraw the parts that only change with the waypoint's settings or the hologram's size. */
   draw(marker, unit, labelSize, selected, resolution) {
-    const key = [marker.label, marker.glyph, marker.color, marker.size, unit, labelSize, selected, resolution].join("|");
+    this.labelShow = marker.labelShow ?? "auto";
+    const key = [marker.label, marker.glyph, marker.color, marker.size, marker.image, marker.tint, unit, labelSize,
+      selected, resolution].join("|");
     if ( key === this.key ) return;
     this.key = key;
     const size = unit * (MARKER_SIZES[marker.size] ?? 1);
@@ -98,7 +108,15 @@ class MarkerSprite {
       else this.head.drawCircle(0, 0, radius * 0.85);
       if ( fill ) this.head.endFill();
     };
-    if ( marker.glyph === "portal" ) {
+    this.icon.visible = false;
+    if ( marker.glyph === IMAGE_GLYPH ) {
+      // A picture on a soft disc of the ink (edged when selected), recoloured with the ink unless told not to.
+      this.head.lineStyle(0).beginFill(color, 0.16).drawCircle(0, 0, radius * 1.05).endFill();
+      this.head.lineStyle({width: Math.max(1, radius * (selected ? 0.14 : 0.06)), color, alpha: selected ? 0.95 : 0.5})
+        .drawCircle(0, 0, radius * 1.05);
+      this.#showIcon(marker.image, radius * 1.7, marker.tint ? color : 0xffffff);
+    }
+    else if ( marker.glyph === "portal" ) {
       // A map placed here: an open ring around a bright core.
       this.head.lineStyle({width: radius * 0.9, color, alpha: 0.18}).drawCircle(0, 0, radius);
       this.head.lineStyle({width: Math.max(1, radius * 0.2), color, alpha: 1}).drawCircle(0, 0, radius);
@@ -130,6 +148,32 @@ class MarkerSprite {
     else this.label.visible = false;
     this.color = color;
     this.size = size;
+  }
+
+  /**
+   * Show a picture as the glyph, fitted into a square of `extent` pixels. It loads in the background (once: Foundry
+   * caches it), and never shows if it fails to.
+   */
+  #showIcon(src, extent, tint) {
+    this.icon.tint = tint;
+    this.iconExtent = extent;
+    if ( src !== this.iconSrc ) {
+      this.iconSrc = src;
+      this.icon.texture = PIXI.Texture.EMPTY;
+      const loadTexture = foundry.canvas.loadTexture ?? globalThis.loadTexture;
+      loadTexture(src).then(texture => {
+        if ( !texture || this.destroyed || (this.iconSrc !== src) ) return;
+        this.icon.texture = texture;
+        this.#fitIcon();
+      }).catch(err => console.warn(`Vira Holo | Pin image ${src} didn't load:`, err));
+    }
+    else if ( this.icon.texture !== PIXI.Texture.EMPTY ) this.#fitIcon();
+  }
+
+  #fitIcon() {
+    const {width, height} = this.icon.texture;
+    this.icon.scale.set(this.iconExtent / Math.max(width, height, 1));
+    this.icon.visible = true;
   }
 
   /**
@@ -198,6 +242,8 @@ class MarkerSprite {
   }
 
   destroy() {
+    this.destroyed = true;
+    this.icon.texture = PIXI.Texture.EMPTY; // Foundry's cache owns the picture
     this.container.destroy({children: true});
   }
 }
@@ -246,6 +292,12 @@ export default class MarkerLayer {
     return this.#sprites.get(id);
   }
 
+  /** Where the labels shown always were laid out (last frame): measurement labels keep clear of them too. */
+  get alwaysBoxes() {
+    return Array.from(this.#sprites.values())
+      .filter(s => (s.labelShow === "always") && s.shown && s.box && s.container.visible).map(s => s.box);
+  }
+
   /**
    * Lay out and draw the pins for this frame.
    * @param {object[]} pins   {id, tier, base, head, up (unit vector: which way is up on screen at the head), depth,
@@ -278,8 +330,12 @@ export default class MarkerLayer {
     const taken = [...obstacles];
     // Bigger pins first; while the view moves, a label already shown keeps its place ahead of one waiting to show;
     // then nearer first.
-    const order = live.filter(pin => labels && pin.sprite.hasLabel).sort((a, b) => (b.tier - a.tier)
-      || (fresh ? 0 : Number(b.sprite.shown) - Number(a.sprite.shown)) || (a.depth - b.depth));
+    // Labels shown always come first (the others make way for them), then bigger pins; while the view moves, a label
+    // already shown keeps its place ahead of one waiting to show; then nearer first. Hover-only labels take no room.
+    const always = pin => Number(pin.sprite.labelShow === "always");
+    const order = live.filter(pin => labels && pin.sprite.hasLabel && (pin.sprite.labelShow !== "hover"))
+      .sort((a, b) => (always(b) - always(a)) || (b.tier - a.tier)
+        || (fresh ? 0 : Number(b.sprite.shown) - Number(a.sprite.shown)) || (a.depth - b.depth));
     const placing = new Set(order);
     for ( const pin of pins ) {
       if ( !placing.has(pin) ) pin.sprite.shown = false;
@@ -319,6 +375,14 @@ export default class MarkerLayer {
       }
       return -1;
     };
+    const leastCovered = () => {
+      let least = 0;
+      for ( let index = 1; index < count; index++ ) {
+        if ( fit(index).cover < fit(least).cover ) least = index;
+      }
+      return least;
+    };
+    const always = sprite.labelShow === "always";
     let target = -1;
     if ( !others ) target = firstFree(count);
     else if ( sprite.shown ) {
@@ -348,9 +412,11 @@ export default class MarkerLayer {
       if ( free < 0 ) sprite.freeSince = null;
       else {
         sprite.freeSince ??= now;
-        if ( now - sprite.freeSince >= SETTLE_MS ) target = free;
+        if ( always || (now - sprite.freeSince >= SETTLE_MS) ) target = free;
       }
     }
+    // A label shown always shows even where there's no room: where it is, else where it's covered least.
+    if ( (target < 0) && always ) target = (sprite.shown && fit(sprite.place)) ? sprite.place : leastCovered();
     if ( target < 0 ) {
       sprite.shown = false;
       sprite.better = null;
@@ -368,8 +434,8 @@ export default class MarkerLayer {
 
   /**
    * How a pin's label would fit at a place: its and its head's boxes, and how much of them other labels and heads
-   * would cover (null if the label would stick out of the render texture).
-   * @returns {{label: object, head: object, cover: number}|null}
+   * would cover (infinitely much if the label would stick out of the render texture).
+   * @returns {{label: object, head: object, cover: number}}
    */
   #fit(pin, place, pins, taken, {width, height}) {
     const {sprite, scale} = pin;
@@ -377,8 +443,10 @@ export default class MarkerLayer {
     const {x: dx, y: dy} = sprite.offset(place, pin.up, scale);
     const head = {x: pin.head.x + dx, y: pin.head.y + dy};
     const label = sprite.labelRect(head, side, scale);
-    if ( (label.x < 0) || (label.y < 0) || (label.x + label.w > width) || (label.y + label.h > height) ) return null;
     const headBox = ((rise === 0) && (lean === 0)) ? pin.headBox : sprite.headRect(head, scale);
+    if ( (label.x < 0) || (label.y < 0) || (label.x + label.w > width) || (label.y + label.h > height) ) {
+      return {label, head: headBox, cover: Infinity};
+    }
     let cover = 0;
     for ( const box of taken ) cover += overlap(label, box) + overlap(headBox, box);
     for ( const other of pins ) {
@@ -402,7 +470,8 @@ export default class MarkerLayer {
   }
 
   /**
-   * The waypoint whose head or base is nearest a render-texture point, within reach; the front-most where several are.
+   * The waypoint whose head or base is within reach of a render-texture point. A head beats a base (another pin's
+   * base may sit right behind a head); then the front-most (as drawn: a hovered pin is on top), then the nearest.
    * @param {number} x
    * @param {number} y
    * @returns {string|null}
@@ -411,10 +480,14 @@ export default class MarkerLayer {
     let best = null;
     for ( const [id, sprite] of this.#sprites ) {
       if ( !sprite.container.visible || !sprite.tip ) continue;
-      const distance = Math.min(Math.hypot(x - sprite.tip.x, y - sprite.tip.y), Math.hypot(x - sprite.base.x, y - sprite.base.y));
+      const toHead = Math.hypot(x - sprite.tip.x, y - sprite.tip.y);
+      const head = toHead <= sprite.reach;
+      const distance = Math.min(toHead, Math.hypot(x - sprite.base.x, y - sprite.base.y));
       if ( distance > sprite.reach ) continue;
       const z = sprite.container.zIndex;
-      if ( !best || (z > best.z) || ((z === best.z) && (distance < best.distance)) ) best = {id, z, distance};
+      const better = !best || ((head !== best.head) ? head
+        : ((z !== best.z) ? (z > best.z) : (distance < best.distance)));
+      if ( better ) best = {id, z, distance, head};
     }
     return best?.id ?? null;
   }

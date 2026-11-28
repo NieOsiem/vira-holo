@@ -1,6 +1,8 @@
-import {INKS, MARKER_GLYPHS, MARKER_SIZES, MAX_LABEL_LENGTH} from "./data.mjs";
+import {IMAGE_GLYPH, INKS, LABEL_SHOWS, MARKER_GLYPHS, MARKER_SIZES, MAX_LABEL_LENGTH, MODULE_ID} from "./data.mjs";
 
 const GLYPH_CHARACTERS = {diamond: "◆", triangle: "▲", circle: "●", square: "■"};
+/** Where this browser remembers the folder pin images were last picked from. */
+const IMAGE_FOLDER_KEY = `${MODULE_ID}.pinImageFolder`;
 /** How long a freshly placed waypoint may take to arrive from the GM before its card gives up. */
 const PENDING_MS = 3000;
 
@@ -29,6 +31,12 @@ export function openCard(tile, holo, id, actions, {portal=false}={}) {
   closeCard();
   const localize = key => game.i18n.localize(`VIRAHOLO.Card.${key}`);
   const editable = !portal || game.user.isGM;
+  const pictureTip = localize(canPickImage() ? `Glyph.${IMAGE_GLYPH}` : "ImageNoPermission");
+  const picture = `<button type="button" class="picture" data-glyph="${IMAGE_GLYPH}" aria-label="${pictureTip}"
+    data-tooltip="${pictureTip}" ${canPickImage() ? "" : "disabled"}><i class="fa-solid fa-image" inert></i>
+    <span class="thumb" hidden></span></button>`;
+  const shows = LABEL_SHOWS.map(show => `<button type="button" data-show="${show}" aria-label="${localize(`Show.${show}`)}"
+    data-tooltip="${localize(`Show.${show}`)}">${localize(`ShowShort.${show}`)}</button>`).join("");
   const element = document.createElement("div");
   element.className = "vira-holo-card";
   element.classList.toggle("portal", portal);
@@ -40,15 +48,18 @@ export function openCard(tile, holo, id, actions, {portal=false}={}) {
     <input type="text" class="label" maxlength="${MAX_LABEL_LENGTH}" placeholder="${localize("Label")}"
       aria-label="${localize("Label")}" ${editable ? "" : "readonly"}>
     <div class="glyphs">${MARKER_GLYPHS.map(glyph => `<button type="button" data-glyph="${glyph}"
-      aria-label="${localize(`Glyph.${glyph}`)}" data-tooltip="${localize(`Glyph.${glyph}`)}">${GLYPH_CHARACTERS[glyph]}</button>`).join("")}</div>
+      aria-label="${localize(`Glyph.${glyph}`)}" data-tooltip="${localize(`Glyph.${glyph}`)}">${GLYPH_CHARACTERS[glyph]}</button>`).join("")}${picture}</div>
     <div class="sizes">${Object.keys(MARKER_SIZES).map(size => `<button type="button" data-size="${size}"
       aria-label="${localize(`Size.${size}`)}" data-tooltip="${localize(`Size.${size}`)}">${localize(`SizeShort.${size}`)}</button>`).join("")}</div>
+    <div class="shows">${shows}</div>
     <div class="inks">${INKS.map(color => `<button type="button" data-ink="${color}" style="--ink: ${color}"
       aria-label="${color}"></button>`).join("")}<input type="color" class="custom" aria-label="${localize("CustomInk")}"
       data-tooltip="${localize("CustomInk")}"></div>
     <div class="actions">
       <button type="button" class="lock" aria-label="${localize("Lock")}" data-tooltip="${localize("Lock")}">
         <i class="fa-solid fa-lock-open" inert></i></button>
+      <button type="button" class="tint" aria-label="${localize("Tint")}" data-tooltip="${localize("Tint")}" hidden>
+        <i class="fa-solid fa-palette" inert></i></button>
       <button type="button" class="focus">${localize("Focus")}</button>
       ${portal ? `<button type="button" class="enter">${localize("Enter")}</button>`
     : `<button type="button" class="delete">${localize("Delete")}</button>`}
@@ -66,9 +77,22 @@ export function openCard(tile, holo, id, actions, {portal=false}={}) {
     else if ( event.key === "Escape" ) closeCard();
     event.stopPropagation(); // Keep Foundry's keybindings out while typing
   });
-  for ( const button of element.querySelectorAll("[data-glyph]") ) {
+  for ( const button of element.querySelectorAll("[data-glyph]:not(.picture)") ) {
     button.addEventListener("click", () => actions.update({glyph: button.dataset.glyph}));
   }
+  element.querySelector(".picture").addEventListener("click", () => {
+    const marker = holo.markers.find(m => m.id === id);
+    // Working in the file picker lets go of the hologram (closing this card): open it again with the new picture.
+    pickImage(marker?.image, image => {
+      actions.update({glyph: IMAGE_GLYPH, image});
+      if ( !tile.destroyed ) openCard(tile, holo, id, actions, {portal});
+    });
+  });
+  for ( const button of element.querySelectorAll("[data-show]") ) {
+    button.addEventListener("click", () => actions.update({labelShow: button.dataset.show}));
+  }
+  const tint = element.querySelector(".tint");
+  tint.addEventListener("click", () => actions.update({tint: !tint.classList.contains("on")}));
   for ( const button of element.querySelectorAll("[data-ink]") ) {
     button.addEventListener("click", () => actions.update({color: button.dataset.ink}));
   }
@@ -89,6 +113,28 @@ export function openCard(tile, holo, id, actions, {portal=false}={}) {
     actions.enter();
   });
   updateCard();
+}
+
+/** May this user pick pin images? Picking one means browsing files. */
+function canPickImage() {
+  return game.user.can("FILES_BROWSE");
+}
+
+/**
+ * Let the user pick an image, starting from the current one or the folder the last one was picked from.
+ * @param {string} [current]
+ * @param {(path: string) => void} onPick
+ */
+function pickImage(current, onPick) {
+  const Picker = foundry.applications.apps?.FilePicker?.implementation ?? FilePicker;
+  new Picker({
+    type: "image",
+    current: current || localStorage.getItem(IMAGE_FOLDER_KEY) || "",
+    callback: path => {
+      localStorage.setItem(IMAGE_FOLDER_KEY, path.slice(0, path.lastIndexOf("/") + 1));
+      onPick(path);
+    }
+  }).render(true);
 }
 
 export function closeCard() {
@@ -138,6 +184,23 @@ export function updateCard() {
   element.querySelector(".hint").textContent = game.i18n.localize(`VIRAHOLO.Card.${marker.locked ? "HintLocked" : hint}`);
   for ( const button of element.querySelectorAll("[data-ink]") ) {
     button.classList.toggle("on", button.dataset.ink.toLowerCase() === marker.color.toLowerCase());
+  }
+  // The image button shows the picture (recoloured with the ink, like on the hologram, unless that's off).
+  const picture = element.querySelector(".picture");
+  const thumb = picture.querySelector(".thumb");
+  thumb.hidden = !marker.image;
+  picture.querySelector("i").hidden = !!marker.image;
+  // Absolute: a relative url() in a custom property would resolve against the stylesheet using it, not the page.
+  const src = marker.image ? new URL(marker.image, document.baseURI).href : null;
+  thumb.style.setProperty("--thumb", src ? `url(${JSON.stringify(src)})` : "none");
+  thumb.style.setProperty("--pin-ink", marker.color);
+  thumb.classList.toggle("tinted", marker.tint !== false);
+  const tint = element.querySelector(".tint");
+  tint.hidden = marker.glyph !== IMAGE_GLYPH;
+  tint.classList.toggle("on", marker.tint !== false);
+  tint.setAttribute("aria-pressed", String(marker.tint !== false));
+  for ( const button of element.querySelectorAll("[data-show]") ) {
+    button.classList.toggle("on", button.dataset.show === (marker.labelShow ?? "auto"));
   }
   for ( const button of element.querySelectorAll("[data-size]") ) {
     button.classList.toggle("on", Number(button.dataset.size) === (marker.size ?? 3));

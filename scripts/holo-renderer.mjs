@@ -2115,8 +2115,9 @@ export default class HoloRenderer {
    */
   get markers() {
     const {look, map} = this.data;
-    const portals = map.children.map(({uuid, id, name, u, v, size, color, locked}) => ({id, u, v, label: name,
-      glyph: "portal", color: color ?? look.color, size, locked, portal: uuid}));
+    const portals = map.children.map(({uuid, id, name, u, v, size, color, locked, labelShow}) => ({
+      id, u, v, label: name, glyph: "portal", color: color ?? look.color, size, locked, labelShow, portal: uuid
+    }));
     return [...this.data.annotations.markers, ...portals].map(m => {
       const live = this.#liveMarkers.get(m.id);
       return live ? {...m, ...live} : m;
@@ -2801,7 +2802,7 @@ export default class HoloRenderer {
 
   /**
    * Stand the waypoints on the surface, and lay out the labels: area labels stay put, measurement labels keep clear
-   * of them and of the pins' heads, and pin labels of all of those.
+   * of them, of the pins' heads and of pin labels shown always, and the other pin labels of all of those.
    */
   #layoutMarkers(pitch) {
     const {look} = this.data;
@@ -2833,7 +2834,8 @@ export default class HoloRenderer {
     const heads = pins.filter(pin => pin.alpha > 0.05).map(pin => this.markerLayer.get(pin.id).headRect(pin.head, pin.scale));
     const mode = this.#layoutMode(markers, pins, areas);
     const shown = this.#labelsShown;
-    this.measureLabels.layout(this.#measureLabelItems, [...areas, ...heads], {selected: this.selectedMeasure, mode,
+    const obstacles = [...areas, ...heads, ...(shown.pins ? this.markerLayer.alwaysBoxes : [])];
+    this.measureLabels.layout(this.#measureLabelItems, obstacles, {selected: this.selectedMeasure, mode,
       labels: shown.measures, focus: [this.hoveredMeasure, this.selectedMeasure].filter(Boolean)});
     this.markerLayer.layout(pins, [...this.measureLabels.boxes, ...areas], {
       width: this.width, height: this.height, squash: Math.sin(pitch), labels: shown.pins, lean: look.pinLean !== false,
@@ -2860,7 +2862,7 @@ export default class HoloRenderer {
     const point = p => (p ? `${round(p.x)},${round(p.y)}` : "-");
     const key = [
       this.#labelSize, this.data.look.labelMode, this.data.look.pinLean, this.selectedMarker, this.selectedMeasure,
-      ...markers.map(m => `${m.id}:${m.size}:${m.label}`),
+      ...markers.map(m => `${m.id}:${m.size}:${m.label}:${m.labelShow}`),
       ...pins.map(pin => `${pin.id}:${point(pin.head)}:${round(pin.scale * 10)}`),
       ...this.#measureLabelItems.map(item => `${item.id}:${point(item.a)}:${point(item.b)}`),
       ...areas.map(box => `${point(box)}:${round(box.w)}`)
