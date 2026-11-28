@@ -29,8 +29,9 @@ const MIN_RENDER_PIXELS = 512;
 const MAX_SUPERSAMPLE = 2;
 /** Largest render texture side, whatever the GPU allows. */
 const MAX_RENDER_SIZE = 8192;
-/** Largest side of the small offscreen textures used to blur the whole-hologram soft shadow. */
+/** Largest side of the small offscreen textures used to blur the whole-hologram soft shadow (signs vs maps). */
 const MAX_SHADOW_SIZE = 384;
+const MAX_MAP_SHADOW_SIZE = 192;
 const DISC_RADIUS = 1.08;
 /** One scanline per this many scene pixels of tile height. */
 const SCANLINE_SPACING = 6;
@@ -897,8 +898,7 @@ uniform vec2 uScale;
 uniform vec2 uMaxUV;
 uniform vec2 uDir;
 float tap(vec2 uv) {
-  if ( (uv.x < 0.0) || (uv.y < 0.0) || (uv.x > uScale.x) || (uv.y > uScale.y) ) return 0.0;
-  return texture2D(uSource, min(uv, uMaxUV)).a;
+  return texture2D(uSource, clamp(uv, vec2(0.0), uMaxUV)).a;
 }
 void main() {
   vec2 uv = vUV * uScale;
@@ -919,11 +919,36 @@ uniform sampler2D uShadow;
 uniform vec2 uScale;
 uniform vec2 uMaxUV;
 uniform float uStrength;
+uniform float uCurve; // >0: boosted curve for thin sign text; 0: gentle linear backdrop for maps
+uniform float uMaxAlpha;
 ${VOLUME}
 void main() {
   float s = texture2D(uShadow, min(vUV * uScale, uMaxUV)).a;
-  float a = clamp(1.0 - exp(-s * 4.5), 0.0, 1.0) * uStrength * 0.94 * volumeFade();
+  float shaped = (uCurve > 0.0) ? clamp(1.0 - exp(-s * uCurve), 0.0, 1.0) : s;
+  float a = shaped * uStrength * uMaxAlpha * volumeFade();
   gl_FragColor = vec4(0.0, 0.0, 0.0, a);
+}`;
+
+/** Broad silhouette masks for map holograms (terrain landmass or image panel), so wireframe lines never cast shadows. */
+const MAP_PANEL_SHADOW_FRAGMENT = `
+precision highp float;
+varying vec2 vUV;
+uniform sampler2D uImage;
+void main() {
+  gl_FragColor = vec4(0.0, 0.0, 0.0, texture2D(uImage, vUV).a);
+}`;
+
+const MAP_TERRAIN_SHADOW_FRAGMENT = `#version 300 es
+precision highp float;
+in vec2 vUV;
+in float vHeight;
+uniform sampler2D uImage;
+uniform float uWireOnly;
+out vec4 fragColor;
+void main() {
+  float land = smoothstep(0.004, 0.025, vHeight);
+  float img = (uWireOnly > 0.5) ? 0.0 : texture(uImage, vUV).a;
+  fragColor = vec4(0.0, 0.0, 0.0, max(land, img));
 }`;
 
 let programs;
@@ -942,7 +967,9 @@ function getPrograms() {
     signRays: PIXI.Program.from(SIGN_RAY_VERTEX, SIGN_RAY_FRAGMENT, "vira-holo-sign-rays"),
     shadowExtract: PIXI.Program.from(SHADOW_VERTEX, SHADOW_EXTRACT_FRAGMENT, "vira-holo-shadow-extract"),
     shadowBlur: PIXI.Program.from(SHADOW_VERTEX, SHADOW_BLUR_FRAGMENT, "vira-holo-shadow-blur"),
-    shadowComposite: PIXI.Program.from(SHADOW_VERTEX, SHADOW_COMPOSITE_FRAGMENT, "vira-holo-shadow-composite")
+    shadowComposite: PIXI.Program.from(SHADOW_VERTEX, SHADOW_COMPOSITE_FRAGMENT, "vira-holo-shadow-composite"),
+    mapPanelShadow: PIXI.Program.from(VERTEX, MAP_PANEL_SHADOW_FRAGMENT, "vira-holo-map-panel-shadow"),
+    mapTerrainShadow: PIXI.Program.from(TERRAIN_VERTEX, MAP_TERRAIN_SHADOW_FRAGMENT, "vira-holo-map-terrain-shadow")
   };
   return programs;
 }
@@ -1503,7 +1530,7 @@ export default class HoloRenderer {
     this.#destroyTerrain();
     if ( this.data.mode !== "terrain" ) return;
     const {surface, wire} = createGrid(resolution, hx, lift, hz, squares);
-    const {terrain, wire: wireProgram} = getPrograms();
+    const {terrain, wire: wireProgram, mapTerrainShadow} = getPrograms();
     const shape = {
       uHeight: PIXI.Texture.EMPTY, uRelief: 0,
       uTexel: new Float32Array([1 / (resolution - 1), 1 / (resolution - 1)]),
@@ -1516,9 +1543,14 @@ export default class HoloRenderer {
       uLinesOnly: 1, uDepthOnly: 0, uDepthBias: WIRE_DEPTH_BIAS}));
     const wireShader = new PIXI.Shader(wireProgram, {...this.#lookUniforms(shape), uWire: 0,
       uDepthBias: WIRE_DEPTH_BIAS});
+    const shadowShader = new PIXI.Shader(mapTerrainShadow, {
+      uCamera: this.cameraUniform, uTarget: this.targetUniform, uCenter: this.centerUniform,
+      ...shape, uDepthBias: 0, uImage: PIXI.Texture.EMPTY, uWireOnly: 0
+    });
     this.#terrain = {
       geometries: [surface, wire],
-      surfaceShader, wireShader, linesShader,
+      surfaceShader, wireShader, linesShader, shadowShader,
+      shadowMesh: new PIXI.Mesh(surface, shadowShader, this.state),
       meshes: [
         new PIXI.Mesh(surface, surfaceShader, this.state),
         new PIXI.Mesh(wire, wireShader, this.state, PIXI.DRAW_MODES.LINES),
@@ -1698,7 +1730,7 @@ export default class HoloRenderer {
 
   #destroyTerrain() {
     if ( !this.#terrain ) return;
-    for ( const mesh of this.#terrain.meshes ) mesh.destroy();
+    for ( const mesh of [...this.#terrain.meshes, this.#terrain.shadowMesh] ) mesh.destroy();
     destroyGeometries(...this.#terrain.geometries);
     this.#terrain = null;
   }
@@ -1762,11 +1794,13 @@ export default class HoloRenderer {
       uniforms.uFlicker = this.#flicker;
     }
     if ( showTerrain ) {
-      const {surfaceShader, wireShader, linesShader} = this.#terrain;
-      for ( const {uniforms} of [surfaceShader, wireShader, linesShader] ) {
+      const {surfaceShader, wireShader, linesShader, shadowShader} = this.#terrain;
+      for ( const {uniforms} of [surfaceShader, wireShader, linesShader, shadowShader] ) {
         uniforms.uHeight = this.#heightmap;
         uniforms.uRelief = terrain.relief * RELIEF_SCALE;
       }
+      shadowShader.uniforms.uImage = image;
+      shadowShader.uniforms.uWireOnly = display.startsWith("wire") ? 1 : 0;
       surfaceShader.uniforms.uContours = linesShader.uniforms.uContours = terrain.contours;
       // A wireframe-only display always shows its wireframe, whatever the overlay setting.
       wireShader.uniforms.uWire = display.startsWith("wire") ? Math.max(terrain.wire, 0.6) : terrain.wire;
@@ -2190,7 +2224,7 @@ export default class HoloRenderer {
     const keep = [this.offGraphics, this.tableMesh, this.#sign?.floorMesh, this.#sign?.baseMesh];
     const hidden = (this.#power > 0) ? [] : this.stage.children.filter(c => !keep.includes(c) && c.visible);
     // Volumetric light cones/rays on signs shouldn't cast a dark shadow: draw them after the shadow pass.
-    const strength = this.#shadow * (this.#sign ? this.#powerEase : 1);
+    const strength = this.#shadow * this.#fade * this.#powerEase;
     const deferred = (this.#sign && (strength > 0.001))
       ? [this.#sign.beamMesh, this.#sign.rayMesh].filter(m => m.visible && !hidden.includes(m))
       : [];
@@ -2204,35 +2238,53 @@ export default class HoloRenderer {
   }
 
   /**
-   * Tuck a soft dark shadow underneath the rendered hologram (in this.renderTexture) so it stays legible over bright
-   * backgrounds and Foundry lighting without darkening its own emitted light or boxing frameless signs.
+   * Tuck a soft dark shadow underneath the rendered hologram (in this.renderTexture) via DST_OVER so it sits cleanly
+   * behind the glow without darkening emitted light. Signs shadow their crisp text/frame silhouette; image and terrain
+   * maps shadow only their broad landmass/panel footprint with a much wider, gentler blur so wireframe lines and
+   * projector rings never cast individual shadows.
    */
   #renderShadow(renderer, strength) {
     const pass = this.#ensureShadowPass();
     const {width: fw, height: fh} = this.renderTexture.frame;
     const {width: bw, height: bh} = this.renderTexture.baseTexture;
     if ( (fw < 2) || (fh < 2) ) return;
-    const scale = Math.min(0.5, MAX_SHADOW_SIZE / Math.max(fw, fh, 1));
+    const sign = !!this.#sign;
+    const maxSide = sign ? MAX_SHADOW_SIZE : MAX_MAP_SHADOW_SIZE;
+    const scale = Math.min(0.5, maxSide / Math.max(fw, fh, 1));
     const sw = Math.max(2, Math.ceil(fw * scale));
     const sh = Math.max(2, Math.ceil(fh * scale));
     this.#sizeShadowRT(pass.a, sw, sh);
     this.#sizeShadowRT(pass.b, sw, sh);
 
-    const extract = pass.extract.shader.uniforms;
-    extract.uSource = this.renderTexture;
-    extract.uScale.set([fw / bw, fh / bh]);
-    extract.uMaxUV.set([Math.max(0, (fw - 0.5) / bw), Math.max(0, (fh - 0.5) / bh)]);
-    extract.uStep.set([0.25 * (fw / sw) / bw, 0.25 * (fh / sh) / bh]);
-    renderer.render(pass.extract, {renderTexture: pass.a, clear: true});
+    if ( sign ) {
+      const extract = pass.extract.shader.uniforms;
+      extract.uSource = this.renderTexture;
+      extract.uScale.set([fw / bw, fh / bh]);
+      extract.uMaxUV.set([Math.max(0, (fw - 0.5) / bw), Math.max(0, (fh - 0.5) / bh)]);
+      extract.uStep.set([0.25 * (fw / sw) / bw, 0.25 * (fh / sh) / bh]);
+      renderer.render(pass.extract, {renderTexture: pass.a, clear: true});
+    } else {
+      const {x, y} = this.viewport;
+      const sx = this.resolution * (sw / fw);
+      const sy = this.resolution * (sh / fh);
+      const maskTransform = new PIXI.Matrix(sx, 0, 0, sy, -x * sx, -y * sy);
+      const showTerrain = !!(this.#terrain && this.#heightmap);
+      const maskMesh = showTerrain ? this.#terrain.shadowMesh : pass.panelMask;
+      if ( !showTerrain ) pass.panelMask.shader.uniforms.uImage = this.#image;
+      renderer.state.set(this.state);
+      renderer.render(maskMesh, {renderTexture: pass.a, clear: true, transform: maskTransform});
+    }
 
     const sbw = pass.a.baseTexture.width;
     const sbh = pass.a.baseTexture.height;
     const sScale = [sw / sbw, sh / sbh];
     const sMaxUV = [Math.max(0, (sw - 0.5) / sbw), Math.max(0, (sh - 0.5) / sbh)];
-    const radiusLayout = Math.clamp(Math.min(this.width, this.height) * 0.022, 6, 28);
-    const targetSigma = radiusLayout * this.resolution * (sw / fw) * 0.45;
+    const radiusLayout = sign
+      ? Math.clamp(Math.min(this.width, this.height) * 0.022, 6, 28)
+      : Math.clamp(Math.min(this.width, this.height) * 0.095, 28, 128);
+    const targetSigma = radiusLayout * this.resolution * (sw / fw) * (sign ? 0.45 : 0.55);
     const passes = (targetSigma <= 5) ? 1 : ((targetSigma <= 10) ? 2 : 3);
-    const step = Math.min(targetSigma / (2.6 * Math.sqrt(passes)), 3);
+    const step = Math.min(targetSigma / (2.6 * Math.sqrt(passes)), 3.2);
     const blur = pass.blur.shader.uniforms;
     blur.uScale.set(sScale);
     blur.uMaxUV.set(sMaxUV);
@@ -2250,12 +2302,14 @@ export default class HoloRenderer {
     composite.uScale.set(sScale);
     composite.uMaxUV.set(sMaxUV);
     composite.uStrength = strength;
+    composite.uCurve = sign ? 4.5 : 0;
+    composite.uMaxAlpha = sign ? 0.94 : 0.62;
     renderer.render(pass.composite, {renderTexture: this.renderTexture, clear: false});
   }
 
   #ensureShadowPass() {
     if ( this.#shadowPass ) return this.#shadowPass;
-    const {shadowExtract, shadowBlur, shadowComposite} = getPrograms();
+    const {shadowExtract, shadowBlur, shadowComposite, mapPanelShadow} = getPrograms();
     const quad = createScreenQuad();
     const copyState = new PIXI.State();
     copyState.blend = false;
@@ -2269,7 +2323,10 @@ export default class HoloRenderer {
     });
     const compositeShader = new PIXI.Shader(shadowComposite, {
       uShadow: PIXI.Texture.EMPTY, uScale: new Float32Array(2), uMaxUV: new Float32Array(2), uStrength: 0,
-      uVolume: this.volumeUniform, uFrag: this.fragUniform
+      uCurve: 0, uMaxAlpha: 0.62, uVolume: this.volumeUniform, uFrag: this.fragUniform
+    });
+    const panelMaskShader = new PIXI.Shader(mapPanelShadow, {
+      uCamera: this.cameraUniform, uTarget: this.targetUniform, uCenter: this.centerUniform, uImage: PIXI.Texture.EMPTY
     });
     this.#shadowPass = {
       quad,
@@ -2277,7 +2334,8 @@ export default class HoloRenderer {
       b: PIXI.RenderTexture.create({width: 64, height: 64}),
       extract: new PIXI.Mesh(quad, extractShader, copyState),
       blur: new PIXI.Mesh(quad, blurShader, copyState),
-      composite: new PIXI.Mesh(quad, compositeShader, compositeState)
+      composite: new PIXI.Mesh(quad, compositeShader, compositeState),
+      panelMask: new PIXI.Mesh(this.panelGeometry, panelMaskShader, this.state)
     };
     return this.#shadowPass;
   }
@@ -3252,14 +3310,15 @@ export default class HoloRenderer {
     this.areaLayer.destroy();
     this.moteMesh.destroy();
     this.stage.destroy({children: true});
-    destroyGeometries(this.discGeometry, this.panelGeometry, this.moteGeometry, this.tableGeometry);
     if ( this.#shadowPass ) {
-      for ( const mesh of [this.#shadowPass.extract, this.#shadowPass.blur, this.#shadowPass.composite] ) mesh.destroy();
+      for ( const mesh of [this.#shadowPass.extract, this.#shadowPass.blur, this.#shadowPass.composite,
+        this.#shadowPass.panelMask] ) mesh.destroy();
       destroyGeometries(this.#shadowPass.quad);
       this.#shadowPass.a.destroy(true);
       this.#shadowPass.b.destroy(true);
       this.#shadowPass = null;
     }
+    destroyGeometries(this.discGeometry, this.panelGeometry, this.moteGeometry, this.tableGeometry);
     this.#tableTexture?.destroy(true);
     this.texture.destroy(false);
     this.renderTexture.destroy(true);
