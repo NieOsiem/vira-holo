@@ -9,7 +9,7 @@ const LABEL_STYLE = {
 };
 /** Label font size in measurement size units at label size 1, and the smallest font (render-texture pixels). */
 const LABEL_FONT = 0.8;
-const MIN_FONT = 8;
+const MIN_FONT = 1;
 /** Largest perspective scale a label is drawn at. */
 const MAX_SCALE = 1.15;
 /**
@@ -54,7 +54,7 @@ class MeasureSprite {
     this.key = key;
     // Text is a bitmap: render it at the hologram's resolution, and sharp enough to be scaled up by perspective.
     this.text.resolution = resolution * MAX_SCALE;
-    const font = Math.max(MIN_FONT, Math.round(size * LABEL_FONT * labelSize));
+    const font = Math.max(MIN_FONT, Math.round(size * LABEL_FONT * labelSize * 10) / 10);
     this.text.style.fontSize = font;
     this.text.text = text;
     const padX = font * 0.45;

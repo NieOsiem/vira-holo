@@ -3,7 +3,7 @@ const OVERLAY_SIZE = 1024;
 const LABEL_STYLE = {fontFamily: "monospace", fill: "#ffffff", fontWeight: "bold", letterSpacing: 1};
 /** Label font size in label size units at label size 1, and the smallest font (render-texture pixels). */
 const LABEL_FONT = 0.75;
-const MIN_FONT = 8;
+const MIN_FONT = 1;
 /** Largest perspective scale a label is drawn at. */
 const MAX_SCALE = 1.15;
 /** zIndex of a hovered or selected area's label, above everything else drawn far to near. */
@@ -29,7 +29,7 @@ class AreaLabel {
     const ink = new PIXI.Color(color);
     // Text is a bitmap: render it at the hologram's resolution, and sharp enough to be scaled up by perspective.
     this.text.resolution = resolution * MAX_SCALE;
-    const font = Math.max(MIN_FONT, Math.round(size * LABEL_FONT * labelSize));
+    const font = Math.max(MIN_FONT, Math.round(size * LABEL_FONT * labelSize * 10) / 10);
     this.text.style.fontSize = font;
     const [r, g, b] = ink.toRgbArray();
     this.text.style.fill = new PIXI.Color([(r + 1) / 2, (g + 1) / 2, (b + 1) / 2]).toHex(); // Ink, lightened to read

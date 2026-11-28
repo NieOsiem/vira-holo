@@ -14,8 +14,11 @@ const LABEL_STYLE = {
 };
 /** Label font size in pin size units at label size 1. */
 const LABEL_FONT = 0.9;
-/** Smallest label font, in render-texture pixels. */
-const MIN_FONT = 8;
+/**
+ * Smallest label font, in render-texture pixels: only a guard against degenerate text. Text is drawn at the hologram's
+ * resolution, so a small tile's tiny labels stay sharp; a bigger floor would stop the label size going down there.
+ */
+const MIN_FONT = 1;
 /** Label scale per size tier: gentler than the glyph's (MARKER_SIZES), so small pins' labels stay readable. */
 const LABEL_TIERS = {1: 0.75, 2: 0.87, 3: 1};
 /**
@@ -178,7 +181,8 @@ class MarkerSprite {
 
     this.hasLabel = !!marker.label;
     if ( this.hasLabel ) {
-      const font = Math.max(MIN_FONT, Math.round(unit * (LABEL_TIERS[marker.size] ?? 1) * LABEL_FONT * labelSize));
+      const font = Math.max(MIN_FONT,
+        Math.round(unit * (LABEL_TIERS[marker.size] ?? 1) * LABEL_FONT * labelSize * 10) / 10);
       this.text.style.fontSize = font;
       this.text.text = marker.label.toUpperCase();
       const padX = font * 0.4;
