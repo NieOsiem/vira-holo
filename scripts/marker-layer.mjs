@@ -251,10 +251,12 @@ export default class MarkerLayer {
    * @param {object[]} pins   {id, tier, base, head, up (unit vector: which way is up on screen at the head), depth,
    *                          scale, alpha}, for each pin in front of the camera
    * @param {{x: number, y: number, w: number, h: number}[]} obstacles   Labels that stay put
-   * @param {{width: number, height: number, squash: number, lean: boolean, focus: string[]}} options
-   *   The render texture's size, how flat ground rings look, whether pins may lean, and the hovered or selected pins
+   * @param {{width: number, height: number, squash: number, lean: boolean, focus: string[], mode: string}} options
+   *   The render texture's size, how flat ground rings look, whether pins may lean, the hovered or selected pins, and
+   *   how to lay out (see HoloRenderer#layoutMode): afresh ("fresh"), not at all ("hold"), or keeping places ("follow")
    */
-  layout(pins, obstacles, {width, height, squash, lean, focus}) {
+  layout(pins, obstacles, {width, height, squash, lean, focus, mode}) {
+    const fresh = mode === "fresh";
     const now = performance.now();
     const dt = Math.clamp(now - (this.#last ?? now), 0, 100);
     this.#last = now;
@@ -268,9 +270,10 @@ export default class MarkerLayer {
     const live = pins.filter(pin => pin.alpha > 0.05);
     for ( const pin of live ) pin.headBox = pin.sprite.headRect(pin.head, pin.scale);
     const taken = [...obstacles];
-    // Bigger pins first; a label already shown keeps its place ahead of one waiting to show; then nearer first.
+    // Bigger pins first; while the view moves, a label already shown keeps its place ahead of one waiting to show;
+    // then nearer first.
     const order = live.filter(pin => pin.sprite.hasLabel).sort((a, b) => (b.tier - a.tier)
-      || (Number(b.sprite.shown) - Number(a.sprite.shown)) || (a.depth - b.depth));
+      || (fresh ? 0 : Number(b.sprite.shown) - Number(a.sprite.shown)) || (a.depth - b.depth));
     const placing = new Set(order);
     for ( const pin of pins ) {
       if ( !placing.has(pin) ) pin.sprite.shown = false;
@@ -279,8 +282,9 @@ export default class MarkerLayer {
     // Where labels not placed yet this frame were last frame: a label only tidies itself into room none of them uses.
     const waiting = new Set(order.filter(pin => pin.sprite.shown && pin.sprite.box));
     for ( const pin of order ) {
+      if ( mode === "hold" ) break;
       waiting.delete(pin);
-      this.#place(pin, live, taken, {width, height}, places, now, Array.from(waiting, other => other.sprite.box));
+      this.#place(pin, live, taken, {width, height}, places, now, fresh ? null : Array.from(waiting, other => other.sprite.box));
     }
     for ( const pin of pins ) this.#animate(pin, focus.includes(pin.id), squash, ease);
   }
@@ -291,7 +295,8 @@ export default class MarkerLayer {
    * (BETTER_MS), so labels don't hop about as the view turns. A hidden label shows at the first free place once
    * there has been one for SETTLE_MS.
    * @param {number} count   How many of PLACES may be used
-   * @param {object[]} others  Boxes of the labels shown that are still to be placed
+   * @param {object[]|null} others   Boxes of the labels shown that are still to be placed; null to lay out afresh: the
+   *                          first free place, at once
    */
   #place(pin, pins, taken, bounds, count, now, others) {
     const sprite = pin.sprite;
@@ -309,7 +314,8 @@ export default class MarkerLayer {
       return -1;
     };
     let target = -1;
-    if ( sprite.shown ) {
+    if ( !others ) target = firstFree(count);
+    else if ( sprite.shown ) {
       const current = fit(sprite.place);
       const area = sprite.labelSize.w * sprite.labelSize.h * pin.scale * pin.scale;
       if ( current && (current.cover <= area * TOLERANCE) ) {

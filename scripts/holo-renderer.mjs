@@ -37,6 +37,8 @@ const STEM_HEIGHT = 0.16;
 const STEM_TIERS = {1: 0.6, 2: 0.8, 3: 1};
 /** Smallest perspective scale pins and labels are drawn at (the largest is MAX_SCALE). */
 const MIN_SCALE = 0.75;
+/** How long everything labels are laid out around must hold still before they're laid out afresh. */
+const STILL_MS = 200;
 /** Longest side of the CPU copy of a heightmap, used to stand waypoints on the terrain and to pick points on it. */
 const HEIGHT_SAMPLES = 512;
 /** How long a new or erased stroke or measurement shows that way here while the GM saves it. */
@@ -2804,11 +2806,46 @@ export default class HoloRenderer {
     }
     const areas = this.areaLayer.boxes;
     const heads = pins.filter(pin => pin.alpha > 0.05).map(pin => this.markerLayer.get(pin.id).headRect(pin.head, pin.scale));
-    this.measureLabels.layout(this.#measureLabelItems, [...areas, ...heads], this.selectedMeasure);
+    const mode = this.#layoutMode(markers, pins, areas);
+    this.measureLabels.layout(this.#measureLabelItems, [...areas, ...heads], this.selectedMeasure, mode);
     this.markerLayer.layout(pins, [...this.measureLabels.boxes, ...areas], {
       width: this.width, height: this.height, squash: Math.sin(pitch), lean: look.pinLean !== false,
-      focus: [this.hoveredMarker, this.selectedMarker].filter(Boolean)
+      focus: [this.hoveredMarker, this.selectedMarker].filter(Boolean), mode
     });
+  }
+
+  /**
+   * What labels were last laid out around, since when it has held still, whether they've been laid out afresh since,
+   * and when it last started moving from rest.
+   */
+  #rest = {key: "", since: 0, fresh: false, moved: -Infinity};
+
+  /**
+   * How to lay out the labels this frame, from whether everything they're laid out around (pin heads, measurement
+   * ends, area labels, the labels themselves) is moving. Once it has held still for STILL_MS they're laid out afresh,
+   * all in one move ("fresh"). For STILL_MS after it starts moving from rest they hold their places ("hold"), so a
+   * jump of the view also ends in one move. Otherwise, while it keeps moving, each label stays where it is as long as
+   * it can ("follow"), so labels don't hop about as the view turns.
+   * @returns {"fresh"|"hold"|"follow"}
+   */
+  #layoutMode(markers, pins, areas) {
+    const round = value => Math.round(value * 2);
+    const point = p => (p ? `${round(p.x)},${round(p.y)}` : "-");
+    const key = [
+      this.#labelSize, this.data.look.labels, this.data.look.pinLean, this.selectedMarker, this.selectedMeasure,
+      ...markers.map(m => `${m.id}:${m.size}:${m.label}`),
+      ...pins.map(pin => `${pin.id}:${point(pin.head)}:${round(pin.scale * 10)}`),
+      ...this.#measureLabelItems.map(item => `${item.id}:${point(item.a)}:${point(item.b)}`),
+      ...areas.map(box => `${point(box)}:${round(box.w)}`)
+    ].join("|");
+    const now = performance.now();
+    const rest = this.#rest;
+    if ( key !== rest.key ) this.#rest = {key, since: now, fresh: false, moved: rest.fresh ? now : rest.moved};
+    else if ( !rest.fresh && (now - rest.since >= STILL_MS) ) {
+      rest.fresh = true;
+      return "fresh";
+    }
+    return (now - this.#rest.moved < STILL_MS) ? "hold" : "follow";
   }
 
   /**

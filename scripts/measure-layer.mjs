@@ -155,8 +155,11 @@ export default class MeasureLayer {
    * @param {{x: number, y: number, w: number, h: number}[]} obstacles   Boxes to keep clear of (labels that stay
    *                           put, pin heads)
    * @param {string|null} selected
+   * @param {"fresh"|"hold"|"follow"} mode   Lay out afresh: the first clear spot, at once; not at all; or keeping
+   *                           spots (see HoloRenderer#layoutMode)
    */
-  layout(items, obstacles, selected) {
+  layout(items, obstacles, selected, mode) {
+    const fresh = mode === "fresh";
     const now = performance.now();
     const ease = 1 - Math.exp(-Math.clamp(now - (this.#last ?? now), 0, 100) / EASE_MS);
     this.#last = now;
@@ -174,24 +177,9 @@ export default class MeasureLayer {
         const spot = at(t);
         return spot && sprite.labelRect(spot.point, SPOTS[i][1], spot.scale);
       });
-      const covered = i => (boxes[i] ? taken.reduce((sum, box) => sum + overlap(boxes[i], box), 0) : Infinity);
-      const free = i => covered(i) === 0;
-      if ( !free(sprite.spot) ) {
-        const index = boxes.findIndex((_, i) => free(i));
-        if ( index >= 0 ) sprite.spot = index;
-        else {
-          // Nowhere clear: the least covered spot, staying put unless another is clearly better.
-          const cover = boxes.map((_, i) => covered(i));
-          const least = cover.indexOf(Math.min(...cover));
-          if ( cover[least] < cover[sprite.spot] * 0.7 ) sprite.spot = least;
-        }
-      }
-      else if ( (sprite.spot !== 0) && free(0) ) {
-        sprite.firstFree ??= now;
-        if ( now - sprite.firstFree >= SETTLE_MS ) sprite.spot = 0;
-      }
-      if ( (sprite.spot === 0) || !free(0) ) sprite.firstFree = null;
-      if ( boxes[sprite.spot] ) taken.push(boxes[sprite.spot]);
+      if ( mode !== "hold" ) this.#choose(sprite, boxes, taken, fresh, now);
+      sprite.target = boxes[sprite.spot];
+      if ( sprite.target ) taken.push(sprite.target);
       sprite.t += (ts[sprite.spot] - sprite.t) * ease;
       sprite.side += (SPOTS[sprite.spot][1] - sprite.side) * ease;
       const shown = at(sprite.t);
@@ -203,10 +191,34 @@ export default class MeasureLayer {
     }
   }
 
-  /** The boxes of the labels on show: {x, y, w, h}. */
+  /**
+   * Pick a label's spot among its boxes (one per SPOTS; null behind the camera), given what's taken: keep it while
+   * it's clear, else the first clear one, else the least covered (unless that's hardly better); back to the first
+   * once that has been clear for SETTLE_MS. Afresh, simply the first clear one, else the least covered.
+   */
+  #choose(sprite, boxes, taken, fresh, now) {
+    const covered = i => (boxes[i] ? taken.reduce((sum, box) => sum + overlap(boxes[i], box), 0) : Infinity);
+    const free = i => covered(i) === 0;
+    if ( fresh ) sprite.spot = 0;
+    if ( !free(sprite.spot) ) {
+      const index = boxes.findIndex((_, i) => free(i));
+      if ( index >= 0 ) sprite.spot = index;
+      else {
+        const cover = boxes.map((_, i) => covered(i));
+        const least = cover.indexOf(Math.min(...cover));
+        if ( fresh || (cover[least] < cover[sprite.spot] * 0.7) ) sprite.spot = least;
+      }
+    }
+    else if ( (sprite.spot !== 0) && free(0) ) {
+      sprite.firstFree ??= now;
+      if ( now - sprite.firstFree >= SETTLE_MS ) sprite.spot = 0;
+    }
+    if ( (sprite.spot === 0) || !free(0) ) sprite.firstFree = null;
+  }
+
+  /** Where the labels on show are going: {x, y, w, h}. */
   get boxes() {
-    return Array.from(this.#sprites.values()).filter(s => s.container.visible && s.bounds)
-      .map(({bounds: {x, y, width, height}}) => ({x, y, w: width, h: height}));
+    return Array.from(this.#sprites.values()).filter(s => s.container.visible && s.target).map(s => s.target);
   }
 
   /**
