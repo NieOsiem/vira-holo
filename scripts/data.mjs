@@ -49,7 +49,12 @@ export const DEFAULTS = Object.freeze({
     /** Density of the specks of light rising through the hologram (0 = none). */
     motes: 0.5,
     /** Show waypoint labels. */
-    labels: true
+    labels: true,
+    /** Pin stem height and label size (pins, measurements and areas), as multiples of the usual. See MARKING_RANGES. */
+    pinHeight: 1,
+    labelSize: 1,
+    /** Whether pins may lean aside to find their label room when nothing upright is free. */
+    pinLean: true
   },
   terrain: {
     /** Greyscale image covering the same area as the tile's image; brighter is higher. */
@@ -205,9 +210,33 @@ export function mapChildren(uuid) {
   });
 }
 
+/** Slider ranges [min, max] of the pin and label sizes a hologram (`look`) or a map (`state.markings`) sets. */
+export const MARKING_RANGES = Object.freeze({pinHeight: [0, 3], labelSize: [0.3, 2.5]});
+/** The pin and label settings of the look a map may have its own of: the sizes, and whether pins may lean. */
+export const MARKING_KEYS = Object.freeze([...Object.keys(MARKING_RANGES), "pinLean"]);
+
+/**
+ * A map's own pin and label settings, which override the hologram's look wherever the map is shown.
+ * @param {object} state   The map journal's state
+ * @returns {{pinHeight: number, labelSize: number, pinLean: boolean}|null}   Null if the map has none
+ */
+function mapMarkings(state) {
+  if ( !state.markings ) return null;
+  const markings = {};
+  for ( const [key, [min, max]] of Object.entries(MARKING_RANGES) ) {
+    const value = Number(state.markings[key]);
+    markings[key] = Number.isFinite(value) ? Math.clamp(value, min, max) : DEFAULTS.look[key];
+  }
+  const lean = state.markings.pinLean;
+  markings.pinLean = (typeof lean === "boolean") ? lean : DEFAULTS.look.pinLean;
+  return markings;
+}
+
 /** What the hologram data says about the map shown: see getHoloData. */
 function mapInfo(journal, home) {
-  if ( !journal ) return {uuid: null, name: null, home: true, ownLook: false, parent: null, position: null, children: []};
+  if ( !journal ) {
+    return {uuid: null, name: null, home: true, ownLook: false, markings: null, parent: null, position: null, children: []};
+  }
   const state = journal.getFlag(MODULE_ID, "state");
   const parent = getStateJournal(state.parent?.uuid);
   return {
@@ -215,6 +244,7 @@ function mapInfo(journal, home) {
     name: journal.name,
     home,
     ownLook: !home && !!state.look,
+    markings: mapMarkings(state),
     parent: parent ? {uuid: parent.uuid, name: parent.name} : null,
     position: parent ? {u: Math.clamp(Number(state.parent.u) || 0, 0, 1), v: Math.clamp(Number(state.parent.v) || 0, 0, 1)}
       : null,
@@ -225,9 +255,10 @@ function mapInfo(journal, home) {
 /**
  * The effective hologram state of a Tile document: defaults, then the mode's defaults, then the tile's flags, with
  * every section shared through a link taken from the link instead. Away from home (see getMaps), content and
- * annotations come from the map shown, and so does the look if that map has its own.
- * `map` describes the map shown ({uuid, name, home, ownLook, parent: {uuid, name}, position: {u, v} on the parent,
- * children}); its uuid is null for a tile at home on its own settings. `imageFromTile` is whether the image is the
+ * annotations come from the map shown, and so does the look if that map has its own. A map shown (home or away) with
+ * its own pin and label settings (`markings`) overrides those in the look.
+ * `map` describes the map shown ({uuid, name, home, ownLook, markings, parent: {uuid, name}, position: {u, v} on the
+ * parent, children}); its uuid is null for a tile at home on its own settings. `imageFromTile` is whether the image is the
  * tile's own texture.
  * @param {TileDocument} doc
  * @returns {object}
@@ -267,6 +298,7 @@ export function getHoloData(doc) {
   data.link = link ? {uuid: link.journal.uuid, name: link.journal.name, share: link.share} : null;
   data.linkMissing = !link && !!doc.flags?.[MODULE_ID]?.link?.uuid;
   data.map = mapInfo(away ?? home, !away);
+  if ( data.map.markings ) Object.assign(data.look, data.map.markings);
   data.imageFromTile = !away && !home;
   return data;
 }

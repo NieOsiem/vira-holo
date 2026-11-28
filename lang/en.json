@@ -113,6 +113,10 @@
         "north": "North marker",
         "northHint": "A small ^ between the projector's circles, pointing to the top of the map image (taken to be north).",
         "labels": "Show labels",
+        "pinHeight": "Pin height",
+        "labelSize": "Label size",
+        "pinLean": "Lean pins aside",
+        "pinLeanHint": "Where labels crowd, a pin whose label has no room upright tips over a little to find some. Off: such labels only fade out (hover a pin to see its label).",
         "motes": "Data motes"
       },
       "Annotations": "Waypoints & drawings",
@@ -219,6 +223,8 @@
       "RecenterUpHint": "After going up to a parent map the view ends centred, easing there from the spot you left, instead of staying on that spot. Set per tile.",
       "OwnLook": "Own look for this map",
       "OwnLookHint": "Off: this map is shown with the hologram's look. On: changes below are saved with the map and shown on any hologram that travels here.",
+      "OwnMarkings": "Own pin and label settings for this map",
+      "OwnMarkingsHint": "Off: pin height, label size and leaning are the hologram's. On: the settings above are saved with the map and used on any hologram showing it.",
       "Circular": "A map can't be placed on itself or on a map inside it."
     },
     "StrokeLimit": "This hologram already has {max} drawings; clear some first.",

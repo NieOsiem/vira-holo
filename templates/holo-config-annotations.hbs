@@ -7,6 +7,30 @@
         <input type="checkbox" id="{{partId}}-labels" name="{{flags}}.look.labels" {{checked holo.look.labels}}>
       </div>
     </div>
+    {{#each markingSliders}}
+    <div class="form-group">
+      <label>{{label}}</label>
+      <div class="form-fields">
+        <range-picker name="{{name}}" value="{{value}}" min="{{min}}" max="{{max}}" step="{{step}}"></range-picker>
+      </div>
+    </div>
+    {{/each}}
+    <div class="form-group">
+      <label for="{{partId}}-pin-lean">{{localize "VIRAHOLO.Config.look.pinLean"}}</label>
+      <div class="form-fields">
+        <input type="checkbox" id="{{partId}}-pin-lean" name="{{pinLeanField}}" {{checked holo.look.pinLean}}>
+      </div>
+      <p class="hint">{{localize "VIRAHOLO.Config.look.pinLeanHint"}}</p>
+    </div>
+    {{#if holo.map.uuid}}
+    <div class="form-group">
+      <label for="{{partId}}-own-markings">{{localize "VIRAHOLO.Maps.OwnMarkings"}}</label>
+      <div class="form-fields">
+        <input type="checkbox" id="{{partId}}-own-markings" name="{{flags}}.map.ownMarkings" {{checked holo.map.markings}}>
+      </div>
+      <p class="hint">{{localize "VIRAHOLO.Maps.OwnMarkingsHint"}}</p>
+    </div>
+    {{/if}}
     <div class="form-group">
       <label>{{localize "VIRAHOLO.Config.markerCount"}}</label>
       <div class="form-fields">

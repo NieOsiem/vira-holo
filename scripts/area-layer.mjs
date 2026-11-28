@@ -1,6 +1,11 @@
 /** Longer side of the overlay texture areas are drawn into, in texels. */
 const OVERLAY_SIZE = 1024;
 const LABEL_STYLE = {fontFamily: "monospace", fill: "#ffffff", fontWeight: "bold", letterSpacing: 1};
+/** Label font size in label size units at label size 1, and the smallest font (render-texture pixels). */
+const LABEL_FONT = 0.75;
+const MIN_FONT = 8;
+/** Largest perspective scale a label is drawn at. */
+const MAX_SCALE = 1.15;
 
 /** One area's label: its name (or size), in a box edged with its ink. Clicking it opens the area's card. */
 class AreaLabel {
@@ -12,33 +17,43 @@ class AreaLabel {
     this.key = "";
   }
 
-  draw(text, color, size, selected, resolution) {
-    const key = [text, color, size, selected, resolution].join("|");
+  draw(text, color, size, labelSize, selected, resolution) {
+    const key = [text, color, size, labelSize, selected, resolution].join("|");
     if ( key === this.key ) return;
     this.key = key;
     const ink = new PIXI.Color(color);
-    this.text.resolution = resolution; // Text is a bitmap: render it at the hologram's resolution
-    this.text.style.fontSize = Math.round(size * 1.2);
+    // Text is a bitmap: render it at the hologram's resolution, and sharp enough to be scaled up by perspective.
+    this.text.resolution = resolution * MAX_SCALE;
+    const font = Math.max(MIN_FONT, Math.round(size * LABEL_FONT * labelSize));
+    this.text.style.fontSize = font;
     const [r, g, b] = ink.toRgbArray();
     this.text.style.fill = new PIXI.Color([(r + 1) / 2, (g + 1) / 2, (b + 1) / 2]).toHex(); // Ink, lightened to read
     this.text.text = text;
-    const padX = size * 0.55;
-    const padY = size * 0.2;
+    const padX = font * 0.45;
+    const padY = font * 0.17;
     const w = this.text.width + (padX * 2);
     const h = this.text.height + (padY * 2);
     this.box.clear()
-      .lineStyle({width: Math.max(1, size * (selected ? 0.18 : 0.09)), color: ink.toNumber(), alpha: selected ? 1 : 0.7})
+      .lineStyle({width: Math.max(1, font * (selected ? 0.15 : 0.075)), color: ink.toNumber(), alpha: selected ? 1 : 0.7})
       .beginFill(0x0a0806, 0.75)
-      .drawRoundedRect(0, 0, w, h, size * 0.3)
+      .drawRoundedRect(0, 0, w, h, font * 0.25)
       .endFill();
     this.text.position.set(padX, padY);
     this.size = {w, h};
   }
 
-  /** Centre the label on a render-texture point. */
-  place({x, y}, alpha) {
-    const {w, h} = this.size;
+  /**
+   * Centre the label on a render-texture point.
+   * @param {{x: number, y: number, depth: number}} point
+   * @param {number} alpha
+   * @param {number} scale   Perspective: how much bigger than usual the label is drawn
+   */
+  place({x, y, depth}, alpha, scale) {
+    const w = this.size.w * scale;
+    const h = this.size.h * scale;
     this.container.position.set(x - (w / 2), y - (h / 2));
+    this.container.scale.set(scale);
+    this.container.zIndex = -depth;
     this.bounds = new PIXI.Rectangle(this.container.x, this.container.y, w, h);
     this.container.alpha = alpha;
     this.container.visible = alpha > 0.01;
@@ -56,11 +71,15 @@ class AreaLabel {
 export default class AreaLayer {
   /** The overlay, in image UV: premultiplied colour to add to the surface. */
   overlay = PIXI.RenderTexture.create({width: 2, height: 2});
-  labels = new PIXI.Container();
   #graphics = new PIXI.Graphics();
   #key = null;
   /** @type {Map<string, AreaLabel>} */
   #sprites = new Map();
+
+  /** @param {PIXI.Container} parent   Where the labels go: drawn far to near with the pins (by zIndex) */
+  constructor(parent) {
+    this.parent = parent;
+  }
 
   /**
    * Redraw the overlay when the areas or the image's shape changed.
@@ -105,7 +124,7 @@ export default class AreaLayer {
    * @param {{id: string, text: string, color: string}[]} labels
    * @returns {Map<string, AreaLabel>}
    */
-  sync(labels, size, selected, resolution=1) {
+  sync(labels, size, labelSize, selected, resolution=1) {
     const ids = new Set(labels.map(l => l.id));
     for ( const [id, sprite] of this.#sprites ) {
       if ( ids.has(id) ) continue;
@@ -117,19 +136,27 @@ export default class AreaLayer {
       if ( !sprite ) {
         sprite = new AreaLabel();
         this.#sprites.set(id, sprite);
-        this.labels.addChild(sprite.container);
+        this.parent.addChild(sprite.container);
       }
-      sprite.draw(text, color, size, id === selected, resolution);
+      sprite.draw(text, color, size, labelSize, id === selected, resolution);
     }
     return this.#sprites;
   }
 
-  /** The area whose label is under a render-texture point. */
+  /** The boxes of the labels on show: {x, y, w, h}. */
+  get boxes() {
+    return Array.from(this.#sprites.values()).filter(s => s.container.visible && s.bounds)
+      .map(({bounds: {x, y, width, height}}) => ({x, y, w: width, h: height}));
+  }
+
+  /** The area whose label is under a render-texture point (the front-most where labels overlap). */
   hitTest(x, y) {
+    let best = null;
     for ( const [id, sprite] of this.#sprites ) {
-      if ( sprite.container.visible && sprite.bounds?.contains(x, y) ) return id;
+      if ( !sprite.container.visible || !sprite.bounds?.contains(x, y) ) continue;
+      if ( !best || (sprite.container.zIndex > best.z) ) best = {id, z: sprite.container.zIndex};
     }
-    return null;
+    return best?.id ?? null;
   }
 
   /** @returns {AreaLabel|undefined} */
@@ -140,7 +167,6 @@ export default class AreaLayer {
   destroy() {
     for ( const sprite of this.#sprites.values() ) sprite.destroy();
     this.#sprites.clear();
-    this.labels.destroy({children: true});
     this.#graphics.destroy();
     this.overlay.destroy(true);
   }

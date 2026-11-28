@@ -12,6 +12,40 @@ const LABEL_STYLE = {
   fontWeight: "bold",
   letterSpacing: 1
 };
+/** Label font size in pin size units at label size 1. */
+const LABEL_FONT = 0.9;
+/** Smallest label font, in render-texture pixels. */
+const MIN_FONT = 8;
+/** Label scale per size tier: gentler than the glyph's (MARKER_SIZES), so small pins' labels stay readable. */
+const LABEL_TIERS = {1: 0.75, 2: 0.87, 3: 1};
+/**
+ * Places a pin's label may take, in order of preference: [rise, lean, side]. The label sits right (side 1) or left
+ * (-1) of the head. The head may rise (its stem grows) and, when nothing upright is free, lean towards the label's
+ * side, both in icon sizes and never further than one icon size from where it stands. Upright places come first:
+ * the first UPRIGHT of them.
+ */
+const PLACES = [];
+for ( const lean of [0, 0.5, 1] ) {
+  for ( const rise of [0, 0.5, 1] ) {
+    if ( Math.hypot(rise, lean) > 1 ) continue;
+    for ( const side of [1, -1] ) PLACES.push([rise, lean, side]);
+  }
+}
+const UPRIGHT = 6;
+/** Largest perspective scale a pin is drawn at (see HoloRenderer#layoutMarkers). */
+export const MAX_SCALE = 1.15;
+/** Time constant of pins rising, leaning and labels fading or changing sides. */
+const EASE_MS = 90;
+/** How long any place must stay free before a hidden label shows there. */
+const SETTLE_MS = 400;
+/** How long a place earlier in PLACES must stay free before a label moves there from one that's still free. */
+const BETTER_MS = 1000;
+/** How much of a label's place may get covered before it moves, as a fraction of its area. */
+const TOLERANCE = 0.2;
+/** Gap kept between labels, and between labels and pin heads, in render-texture pixels. */
+const MARGIN = 2;
+/** zIndex of a hovered or selected pin, above everything else drawn far to near. */
+const FOCUS_Z = 1e6;
 
 /** One waypoint: a stem from the surface, a ground ring, a glyph head and an optional label. */
 class MarkerSprite {
@@ -27,14 +61,31 @@ class MarkerSprite {
     this.label.addChild(this.labelBox, this.text);
     this.container.addChild(this.ground, this.stem, this.head, this.label);
     this.key = "";
+    this.hasLabel = false;
+    /** Layout: the place (index into PLACES) the label is given, and whether it's shown at all. */
+    this.place = 0;
+    this.shown = false;
+    /** The label's box as last laid out (null while hidden). */
+    this.box = null;
+    /** A better place that's free, and since when: {index, since}. */
+    this.better = null;
+    /** Since when a place has been free for the hidden label. */
+    this.freeSince = null;
+    /** Eased towards the layout: how far the head is moved (pixels), the label's side (-1..1) and its alpha. */
+    this.dx = 0;
+    this.dy = 0;
+    this.side = 1;
+    this.labelAlpha = 0;
   }
 
   /** Redraw the parts that only change with the waypoint's settings or the hologram's size. */
-  draw(marker, size, showLabel, selected, resolution) {
-    const key = [marker.label, marker.glyph, marker.color, size, showLabel, selected, resolution].join("|");
+  draw(marker, unit, labelSize, showLabel, selected, resolution) {
+    const key = [marker.label, marker.glyph, marker.color, marker.size, unit, labelSize, showLabel, selected, resolution].join("|");
     if ( key === this.key ) return;
     this.key = key;
-    this.text.resolution = resolution; // Text is a bitmap: render it at the hologram's resolution
+    const size = unit * (MARKER_SIZES[marker.size] ?? 1);
+    // Text is a bitmap: render it at the hologram's resolution, and sharp enough to be scaled up by perspective.
+    this.text.resolution = resolution * MAX_SCALE;
     const color = new PIXI.Color(marker.color).toNumber();
     const radius = size * (selected ? 1.35 : 1);
 
@@ -58,50 +109,92 @@ class MarkerSprite {
       outline(Math.max(1, radius * 0.22), 1, selected ? 0.75 : 0.45);
     }
 
-    const visible = showLabel && !!marker.label;
-    this.label.visible = visible;
-    if ( visible ) {
-      this.text.style.fontSize = Math.round(size * 1.5);
+    this.hasLabel = showLabel && !!marker.label;
+    if ( this.hasLabel ) {
+      const font = Math.max(MIN_FONT, Math.round(unit * (LABEL_TIERS[marker.size] ?? 1) * LABEL_FONT * labelSize));
+      this.text.style.fontSize = font;
       this.text.text = marker.label.toUpperCase();
-      const padX = size * 0.6;
-      const padY = size * 0.3;
+      const padX = font * 0.4;
+      const padY = font * 0.2;
       const w = this.text.width + (padX * 2);
       const h = this.text.height + (padY * 2);
       this.labelBox.clear()
-        .lineStyle({width: Math.max(1, size * 0.12), color, alpha: 0.8})
+        .lineStyle({width: Math.max(1, font * 0.08), color, alpha: 0.8})
         .beginFill(0x08050a, 0.72)
-        .drawRoundedRect(0, 0, w, h, size * 0.3)
+        .drawRoundedRect(0, 0, w, h, font * 0.2)
         .endFill();
       this.text.position.set(padX, padY);
       this.labelSize = {w, h};
+      this.gap = (radius * 1.2) + (font * 0.3);
     }
+    else this.label.visible = false;
     this.color = color;
     this.size = size;
   }
 
   /**
-   * Place the waypoint between its surface point and its head (render-texture pixels).
+   * Where the label goes for a head position and side, at a scale.
+   * @returns {{x: number, y: number, w: number, h: number}}
+   */
+  labelRect(head, side, scale) {
+    const w = this.labelSize.w * scale;
+    const h = this.labelSize.h * scale;
+    const gap = this.gap * scale;
+    const right = head.x + gap;
+    const left = head.x - gap - w;
+    return {x: left + ((right - left) * ((side + 1) / 2)), y: head.y - (h / 2), w, h};
+  }
+
+  /** The box the head covers at a position and scale. */
+  headRect(head, scale) {
+    const r = this.size * scale;
+    return {x: head.x - r, y: head.y - r, w: 2 * r, h: 2 * r};
+  }
+
+  /**
+   * How far a place moves the head from where it stands, in pixels.
+   * @param {number[]} place              [rise, lean, side] (see PLACES)
+   * @param {{x: number, y: number}} up   Which way is up on screen at the head (a unit vector)
+   * @param {number} scale
+   */
+  offset([rise, lean, side], up, scale) {
+    const icon = 2 * this.size * scale;
+    return {x: ((up.x * rise) + (lean * side)) * icon, y: up.y * rise * icon};
+  }
+
+  /**
+   * Draw the waypoint between its surface point and its head (render-texture pixels).
    * @param {{x: number, y: number}} base
    * @param {{x: number, y: number}} head
    * @param {number} groundSquash   How flat the ground ring looks (sine of the camera pitch)
    * @param {number} alpha
+   * @param {number} scale          Perspective: how much bigger than usual the head and label are drawn
    */
-  place(base, head, groundSquash, alpha) {
+  render(base, head, groundSquash, alpha, scale) {
     const {color, size} = this;
     this.stem.clear()
       .lineStyle({width: size * 0.6, color, alpha: 0.15})
       .moveTo(base.x, base.y).lineTo(head.x, head.y)
       .lineStyle({width: Math.max(1, size * 0.16), color, alpha: 0.9})
       .moveTo(base.x, base.y).lineTo(head.x, head.y);
+    const ring = size * 0.9 * scale;
     this.ground.clear()
       .lineStyle({width: Math.max(1, size * 0.14), color, alpha: 0.8})
-      .drawEllipse(base.x, base.y, size * 0.9, size * 0.9 * Math.max(groundSquash, 0.15));
+      .drawEllipse(base.x, base.y, ring, ring * Math.max(groundSquash, 0.15));
     this.head.position.set(head.x, head.y);
-    if ( this.label.visible ) this.label.position.set(head.x + (size * 1.6), head.y - (this.labelSize.h / 2));
+    this.head.scale.set(scale);
+    this.label.visible = this.hasLabel && (this.labelAlpha > 0.01);
+    if ( this.label.visible ) {
+      const box = this.labelRect(head, this.side, scale);
+      this.label.position.set(box.x, box.y);
+      this.label.scale.set(scale);
+      this.label.alpha = this.labelAlpha;
+    }
     this.container.alpha = alpha;
     this.container.visible = alpha > 0.01;
     this.base = base;
     this.tip = head;
+    this.reach = size * scale * 1.8;
   }
 
   destroy() {
@@ -109,18 +202,28 @@ class MarkerSprite {
   }
 }
 
-/** All waypoints of one hologram, drawn into its render texture above the content. */
+/**
+ * All waypoints of one hologram, drawn into its render texture above the content. Their labels are laid out to
+ * keep clear of each other: each in turn, most important first, takes the first free place among PLACES (flipping
+ * sides, raising its pin, then tipping its pin over); a label with no free place fades out until there is one, or
+ * while its pin is hovered or selected.
+ */
 export default class MarkerLayer {
-  container = new PIXI.Container();
   /** @type {Map<string, MarkerSprite>} */
   #sprites = new Map();
+  #last = null;
+
+  /** @param {PIXI.Container} parent   Where the pins go: drawn far to near with the other labels (by zIndex) */
+  constructor(parent) {
+    this.parent = parent;
+  }
 
   /**
    * Create, update and remove sprites to match the waypoints.
    * @param {object[]} markers
-   * @param {{size: number, labels: boolean, selected: string|null, resolution: number}} options
+   * @param {{size: number, labelSize: number, labels: boolean, selected: string|null, resolution: number}} options
    */
-  sync(markers, {size, labels, selected, resolution=1}) {
+  sync(markers, {size, labelSize, labels, selected, resolution=1}) {
     const ids = new Set(markers.map(m => m.id));
     for ( const [id, sprite] of this.#sprites ) {
       if ( ids.has(id) ) continue;
@@ -132,9 +235,9 @@ export default class MarkerLayer {
       if ( !sprite ) {
         sprite = new MarkerSprite();
         this.#sprites.set(marker.id, sprite);
-        this.container.addChild(sprite.container);
+        this.parent.addChild(sprite.container);
       }
-      sprite.draw(marker, size * (MARKER_SIZES[marker.size] ?? 1), labels, marker.id === selected, resolution);
+      sprite.draw(marker, size, labelSize, labels, marker.id === selected, resolution);
     }
   }
 
@@ -144,29 +247,175 @@ export default class MarkerLayer {
   }
 
   /**
-   * The waypoint whose head or base is closest to a render-texture point, within reach.
+   * Lay out and draw the pins for this frame.
+   * @param {object[]} pins   {id, tier, base, head, up (unit vector: which way is up on screen at the head), depth,
+   *                          scale, alpha}, for each pin in front of the camera
+   * @param {{x: number, y: number, w: number, h: number}[]} obstacles   Labels that stay put
+   * @param {{width: number, height: number, squash: number, lean: boolean, focus: string[]}} options
+   *   The render texture's size, how flat ground rings look, whether pins may lean, and the hovered or selected pins
+   */
+  layout(pins, obstacles, {width, height, squash, lean, focus}) {
+    const now = performance.now();
+    const dt = Math.clamp(now - (this.#last ?? now), 0, 100);
+    this.#last = now;
+    const ease = 1 - Math.exp(-dt / EASE_MS);
+    const ids = new Set(pins.map(pin => pin.id));
+    for ( const [id, sprite] of this.#sprites ) {
+      if ( !ids.has(id) ) sprite.container.visible = false;
+    }
+    for ( const pin of pins ) pin.sprite = this.#sprites.get(pin.id);
+    // Pins outside the projection area take no room.
+    const live = pins.filter(pin => pin.alpha > 0.05);
+    for ( const pin of live ) pin.headBox = pin.sprite.headRect(pin.head, pin.scale);
+    const taken = [...obstacles];
+    // Bigger pins first; a label already shown keeps its place ahead of one waiting to show; then nearer first.
+    const order = live.filter(pin => pin.sprite.hasLabel).sort((a, b) => (b.tier - a.tier)
+      || (Number(b.sprite.shown) - Number(a.sprite.shown)) || (a.depth - b.depth));
+    const placing = new Set(order);
+    for ( const pin of pins ) {
+      if ( !placing.has(pin) ) pin.sprite.shown = false;
+    }
+    const places = lean ? PLACES.length : UPRIGHT;
+    // Where labels not placed yet this frame were last frame: a label only tidies itself into room none of them uses.
+    const waiting = new Set(order.filter(pin => pin.sprite.shown && pin.sprite.box));
+    for ( const pin of order ) {
+      waiting.delete(pin);
+      this.#place(pin, live, taken, {width, height}, places, now, Array.from(waiting, other => other.sprite.box));
+    }
+    for ( const pin of pins ) this.#animate(pin, focus.includes(pin.id), squash, ease);
+  }
+
+  /**
+   * Find a pin's label a place. A label shown keeps its place until that gets covered (more than TOLERANCE of it),
+   * then moves to the nearest free one; it moves to a place earlier in PLACES only once that has stayed free a while
+   * (BETTER_MS), so labels don't hop about as the view turns. A hidden label shows at the first free place once
+   * there has been one for SETTLE_MS.
+   * @param {number} count   How many of PLACES may be used
+   * @param {object[]} others  Boxes of the labels shown that are still to be placed
+   */
+  #place(pin, pins, taken, bounds, count, now, others) {
+    const sprite = pin.sprite;
+    // Worked out only as needed: usually just the place a label already has.
+    const fits = [];
+    const fit = index => {
+      if ( index >= count ) return null;
+      if ( fits[index] === undefined ) fits[index] = this.#fit(pin, PLACES[index], pins, taken, bounds);
+      return fits[index];
+    };
+    const firstFree = to => {
+      for ( let index = 0; index < to; index++ ) {
+        if ( fit(index)?.cover === 0 ) return index;
+      }
+      return -1;
+    };
+    let target = -1;
+    if ( sprite.shown ) {
+      const current = fit(sprite.place);
+      const area = sprite.labelSize.w * sprite.labelSize.h * pin.scale * pin.scale;
+      if ( current && (current.cover <= area * TOLERANCE) ) {
+        target = sprite.place;
+        const free = firstFree(sprite.place);
+        if ( (free < 0) || others.some(box => overlap(fits[free].label, box) > 0) ) sprite.better = null;
+        else if ( sprite.better?.index !== free ) sprite.better = {index: free, since: now};
+        else if ( now - sprite.better.since >= BETTER_MS ) target = free;
+      }
+      else {
+        // Covered: the nearest free place, not the first, so the label moves as little as it can.
+        let nearest = Infinity;
+        for ( let index = 0; index < count; index++ ) {
+          const place = fit(index);
+          if ( place?.cover !== 0 ) continue;
+          const from = current?.label ?? place.label;
+          const distance = Math.hypot(place.label.x - from.x, place.label.y - from.y);
+          if ( distance < nearest ) [nearest, target] = [distance, index];
+        }
+      }
+    }
+    else {
+      const free = firstFree(count);
+      if ( free < 0 ) sprite.freeSince = null;
+      else {
+        sprite.freeSince ??= now;
+        if ( now - sprite.freeSince >= SETTLE_MS ) target = free;
+      }
+    }
+    if ( target < 0 ) {
+      sprite.shown = false;
+      sprite.better = null;
+      sprite.box = null;
+      return;
+    }
+    if ( target !== sprite.place ) sprite.better = null;
+    sprite.place = target;
+    sprite.shown = true;
+    sprite.freeSince = null;
+    taken.push(fits[target].label);
+    sprite.box = fits[target].label;
+    pin.headBox = fits[target].head;
+  }
+
+  /**
+   * How a pin's label would fit at a place: its and its head's boxes, and how much of them other labels and heads
+   * would cover (null if the label would stick out of the render texture).
+   * @returns {{label: object, head: object, cover: number}|null}
+   */
+  #fit(pin, place, pins, taken, {width, height}) {
+    const {sprite, scale} = pin;
+    const [rise, lean, side] = place;
+    const {x: dx, y: dy} = sprite.offset(place, pin.up, scale);
+    const head = {x: pin.head.x + dx, y: pin.head.y + dy};
+    const label = sprite.labelRect(head, side, scale);
+    if ( (label.x < 0) || (label.y < 0) || (label.x + label.w > width) || (label.y + label.h > height) ) return null;
+    const headBox = ((rise === 0) && (lean === 0)) ? pin.headBox : sprite.headRect(head, scale);
+    let cover = 0;
+    for ( const box of taken ) cover += overlap(label, box) + overlap(headBox, box);
+    for ( const other of pins ) {
+      if ( other !== pin ) cover += overlap(label, other.headBox);
+    }
+    return {label, head: headBox, cover};
+  }
+
+  /** Ease a pin towards its layout (or, focused, show its label whatever) and draw it. */
+  #animate(pin, focused, squash, ease) {
+    const {sprite, base, up, scale, depth, alpha} = pin;
+    const place = sprite.shown ? PLACES[sprite.place] : [0, 0, sprite.side >= 0 ? 1 : -1];
+    const offset = sprite.offset(place, up, scale);
+    sprite.dx += (offset.x - sprite.dx) * ease;
+    sprite.dy += (offset.y - sprite.dy) * ease;
+    sprite.side += (place[2] - sprite.side) * ease;
+    sprite.labelAlpha += (((sprite.shown || focused) ? 1 : 0) - sprite.labelAlpha) * ease;
+    const head = {x: pin.head.x + sprite.dx, y: pin.head.y + sprite.dy};
+    sprite.container.zIndex = focused ? FOCUS_Z : -depth;
+    sprite.render(base, head, squash, alpha, scale);
+  }
+
+  /**
+   * The waypoint whose head or base is nearest a render-texture point, within reach; the front-most where several are.
    * @param {number} x
    * @param {number} y
    * @returns {string|null}
    */
   hitTest(x, y) {
     let best = null;
-    let bestDistance = Infinity;
     for ( const [id, sprite] of this.#sprites ) {
       if ( !sprite.container.visible || !sprite.tip ) continue;
-      const reach = sprite.size * 1.8;
       const distance = Math.min(Math.hypot(x - sprite.tip.x, y - sprite.tip.y), Math.hypot(x - sprite.base.x, y - sprite.base.y));
-      if ( (distance <= reach) && (distance < bestDistance) ) {
-        best = id;
-        bestDistance = distance;
-      }
+      if ( distance > sprite.reach ) continue;
+      const z = sprite.container.zIndex;
+      if ( !best || (z > best.z) || ((z === best.z) && (distance < best.distance)) ) best = {id, z, distance};
     }
-    return best;
+    return best?.id ?? null;
   }
 
   destroy() {
     for ( const sprite of this.#sprites.values() ) sprite.destroy();
     this.#sprites.clear();
-    this.container.destroy({children: true});
   }
+}
+
+/** How much of two boxes {x, y, w, h} overlaps, each grown by MARGIN (0 if they're clear of each other). */
+function overlap(a, b) {
+  const w = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x) + MARGIN;
+  const h = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y) + MARGIN;
+  return ((w > 0) && (h > 0)) ? w * h : 0;
 }

@@ -1,6 +1,6 @@
 import {DISPLAY_MODES, OFF_STYLES, SIGN_BASES, SIGN_PAGINGS, SIGN_PANELS, SIGN_SCROLLS, SIGN_SOURCES, SIGN_TILT_RANGE,
-  allowedDisplays, LINK_SECTIONS, MODULE_ID, UNITS, defaultCamera, deletionUpdate, getHoloData,
-  getStateJournal} from "./data.mjs";
+  allowedDisplays, LINK_SECTIONS, MARKING_KEYS, MARKING_RANGES, MODULE_ID, UNITS, defaultCamera, deletionUpdate,
+  getHoloData, getStateJournal} from "./data.mjs";
 import * as history from "./history.mjs";
 import {createLink, joinLink, leaveLink, linkChoices, writeHolo} from "./links.mjs";
 import {addMapAbove, addMapInside, arrivalCamera, parentChoices, setParent} from "./maps.mjs";
@@ -161,6 +161,14 @@ export default class HoloConfig extends HandlebarsApplicationMixin(DocumentSheet
         name: `flags.${MODULE_ID}.terrain.disabled.${m}`, label: localize(`VIRAHOLO.Display.${m}`), disabled: !!holo.terrain.disabled?.[m]
       })),
       cameraSliders: sliders("camera"),
+      // A map with its own pin and label settings shows (and edits) those instead of the hologram's.
+      markingSliders: Object.entries(MARKING_RANGES).map(([key, [min, max]]) => ({
+        key, min, max, step: 0.05,
+        name: markingField(holo, key),
+        value: holo.look[key],
+        label: localize(`VIRAHOLO.Config.look.${key}`)
+      })),
+      pinLeanField: markingField(holo, "pinLean"),
       markerCount: holo.annotations.markers.length,
       strokeCount: holo.annotations.strokes.length,
       measureCount: holo.annotations.measures.length,
@@ -208,6 +216,7 @@ export default class HoloConfig extends HandlebarsApplicationMixin(DocumentSheet
     const current = foundry.utils.flattenObject({flags: {[MODULE_ID]: holo}});
     // Map fields (under "map", like the hologram data's description of the map) edit the map's journal instead.
     current[`flags.${MODULE_ID}.map.parentUuid`] = holo.map.parent?.uuid ?? "";
+    current[`flags.${MODULE_ID}.map.ownMarkings`] = !!holo.map.markings;
     // v14 renamed objectsEqual to equals (which also compares primitives and arrays).
     const equals = foundry.utils.equals ?? ((a, b) => foundry.utils.objectsEqual({v: a}, {v: b}));
     const changes = {};
@@ -228,16 +237,26 @@ export default class HoloConfig extends HandlebarsApplicationMixin(DocumentSheet
     return {};
   }
 
-  /** Rename the map shown, move it to another parent, or give it its own look (or drop it). */
-  async #updateMap({name, parentUuid, ownLook}) {
+  /**
+   * Rename the map shown, move it to another parent, give it its own look or its own pin and label settings (or drop
+   * them), or change those settings.
+   */
+  async #updateMap({name, parentUuid, ownLook, ownMarkings, markings}) {
     const data = getHoloData(this.document);
     const map = getStateJournal(data.map.uuid);
     if ( !map ) return;
     if ( name?.trim() ) await map.update({name: name.trim()});
     if ( parentUuid !== undefined ) await setParent(map, parentUuid || null);
-    if ( ownLook === undefined ) return;
-    const path = `flags.${MODULE_ID}.state.look`;
-    await map.update(ownLook ? {[path]: foundry.utils.deepClone(data.look)} : deletionUpdate(path));
+    if ( ownLook !== undefined ) {
+      const path = `flags.${MODULE_ID}.state.look`;
+      await map.update(ownLook ? {[path]: foundry.utils.deepClone(data.look)} : deletionUpdate(path));
+    }
+    const path = `flags.${MODULE_ID}.state.markings`;
+    if ( ownMarkings !== undefined ) {
+      const seed = Object.fromEntries(MARKING_KEYS.map(key => [key, data.look[key]]));
+      await map.update(ownMarkings ? {[path]: seed} : deletionUpdate(path));
+    }
+    else if ( markings ) await map.update({[path]: markings});
   }
 
   static async #onAddMapAbove() {
@@ -332,6 +351,11 @@ export default class HoloConfig extends HandlebarsApplicationMixin(DocumentSheet
     const {mode} = getHoloData(this.document);
     await this.document.update({[`flags.${MODULE_ID}.camera`]: defaultCamera(mode)});
   }
+}
+
+/** The form field of a pin and label setting: the map's own if it has them, else the hologram's look. */
+function markingField(holo, key) {
+  return holo.map.markings ? `flags.${MODULE_ID}.map.markings.${key}` : `flags.${MODULE_ID}.look.${key}`;
 }
 
 /** "Entry" or "Entry: Page" for a journal entry or page UUID, or null. */

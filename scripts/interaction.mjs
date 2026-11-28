@@ -420,6 +420,7 @@ function onPointerDown(event) {
 
 function onPointerMove(event) {
   if ( !drag ) {
+    hoverMarker(event);
     hoverArea(event);
     return hoverMeasure(event);
   }
@@ -687,6 +688,13 @@ function showMeasure(tile, holo, {a, b}, force=false) {
   holo.setLiveMeasure({points});
   measurePreviewTile = tile;
   sendPreview(tile, {kind: "measure", points}, force);
+}
+
+/** The pin under the pointer shows its label on top, for anyone (driver or not). */
+function hoverMarker(event) {
+  const hit = hologramAt(event, true);
+  const id = hit ? hit.holo.markerAt(hit.holo.toTexturePoint(canvasPoint(event))) : null;
+  for ( const holo of getHolograms().values() ) holo.hoveredMarker = (holo === hit?.holo) ? id : null;
 }
 
 /** Move the measurement's end to the surface under a canvas point (it stays put off the surface). */

@@ -1,7 +1,7 @@
 import AreaLayer from "./area-layer.mjs";
-import {MEASURE_INK, SIGN_PANELS, SIGN_SCROLLS, SIGN_TILT_RANGE, effectiveDisplay, UNITS, formatArea, formatDistance,
-  getHoloData} from "./data.mjs";
-import MarkerLayer from "./marker-layer.mjs";
+import {MARKING_RANGES, MEASURE_INK, SIGN_PANELS, SIGN_SCROLLS, SIGN_TILT_RANGE, effectiveDisplay, UNITS, formatArea,
+  formatDistance, getHoloData} from "./data.mjs";
+import MarkerLayer, {MAX_SCALE} from "./marker-layer.mjs";
 import MeasureLayer from "./measure-layer.mjs";
 import StrokeLayer from "./stroke-layer.mjs";
 import TextPanel from "./text-panel.mjs";
@@ -33,6 +33,10 @@ const DISC_RADIUS = 1.08;
 const SCANLINE_SPACING = 6;
 /** Waypoint stem height, in footprint units. */
 const STEM_HEIGHT = 0.16;
+/** Stem height per pin size tier, as a fraction of STEM_HEIGHT. */
+const STEM_TIERS = {1: 0.6, 2: 0.8, 3: 1};
+/** Smallest perspective scale pins and labels are drawn at (the largest is MAX_SCALE). */
+const MIN_SCALE = 0.75;
 /** Longest side of the CPU copy of a heightmap, used to stand waypoints on the terrain and to pick points on it. */
 const HEIGHT_SAMPLES = 512;
 /** How long a new or erased stroke or measurement shows that way here while the GM saves it. */
@@ -1074,7 +1078,10 @@ export default class HoloRenderer {
     this.depthReadState.depthMask = false;
 
     const {panel, disc, stroke, mote} = getPrograms();
-    this.areaLayer = new AreaLayer();
+    /** Pins and the labels of measurements and areas, drawn far to near: each sets its zIndex to minus its depth. */
+    this.billboards = new PIXI.Container();
+    this.billboards.sortableChildren = true;
+    this.areaLayer = new AreaLayer(this.billboards);
     this.discGeometry = createQuad();
     setQuad(this.discGeometry, DISC_RADIUS, 0, DISC_RADIUS, [-1, 1, 1, 1, 1, -1, -1, -1]);
     // The projector stays put on the floor: panning and zooming only move the content across and above it.
@@ -1109,7 +1116,7 @@ export default class HoloRenderer {
     });
     this.moteMesh = new PIXI.Mesh(this.moteGeometry, this.moteShader, this.state, PIXI.DRAW_MODES.POINTS);
     this.stage = new PIXI.Container();
-    this.markerLayer = new MarkerLayer();
+    this.markerLayer = new MarkerLayer(this.billboards);
     this.pingGraphics = new PIXI.Graphics();
     this.offGraphics = new PIXI.Graphics();
     const strokeUniforms = {uCamera: this.cameraUniform, uTarget: this.targetUniform, uCenter: this.centerUniform,
@@ -1118,7 +1125,7 @@ export default class HoloRenderer {
     this.liveStrokeLayer = new StrokeLayer(stroke, strokeUniforms, this.state);
     this.measureLines = new StrokeLayer(stroke, strokeUniforms, this.state, {dash: MEASURE_DASHES});
     this.liveMeasureLines = new StrokeLayer(stroke, strokeUniforms, this.state, {dash: MEASURE_DASHES});
-    this.measureLabels = new MeasureLayer();
+    this.measureLabels = new MeasureLayer(this.billboards);
     this.stage.addChild(this.discMesh, this.panelMesh);
     this.#addOverlays();
     this.configure();
@@ -1161,6 +1168,8 @@ export default class HoloRenderer {
   #liveMarkers = new Map();
   /** Waypoint whose card is open on this client. */
   selectedMarker = null;
+  /** Waypoint under the pointer on this client: its label shows on top. */
+  hoveredMarker = null;
   /** The stroke this client is drawing right now. */
   #liveStroke = null;
   #liveStrokeVersion = 0;
@@ -1205,10 +1214,10 @@ export default class HoloRenderer {
   #tableTexture = null;
   #tableHoleDrawn = null;
 
-  /** Strokes, measurements and waypoints go on top of the content, waypoints last. */
+  /** Strokes and measurement lines go on top of the content, then waypoints and labels. */
   #addOverlays() {
     this.stage.addChild(this.moteMesh, this.strokeLayer.container, this.liveStrokeLayer.container, this.measureLines.container,
-      this.liveMeasureLines.container, this.measureLabels.container, this.areaLayer.labels, this.markerLayer.container, this.tableMesh, this.pingGraphics, this.offGraphics);
+      this.liveMeasureLines.container, this.billboards, this.tableMesh, this.pingGraphics, this.offGraphics);
   }
 
   #lookUniforms(extra={}) {
@@ -1661,8 +1670,8 @@ export default class HoloRenderer {
     disc.uDashPhase = (seconds * 0.5) % 1;
     this.#updateSign(seconds);
     this.#updateMotes(showTerrain, seconds);
-    this.#layoutLines(showTerrain);
     this.#layoutAreaLabels();
+    this.#layoutLines(showTerrain);
     this.#layoutMarkers(pitch);
     this.#drawPings();
     this.#updateTable(seconds);
@@ -2307,30 +2316,30 @@ export default class HoloRenderer {
     for ( const layer of [this.strokeLayer, this.liveStrokeLayer, this.measureLines, this.liveMeasureLines] ) {
       layer.update(style);
     }
-    this.#layoutMeasureLabels(measures);
+    this.#measureLabelItems = this.#prepareMeasureLabels(measures);
   }
 
-  /** Endpoint dots and distance labels, placed with the camera as drawn this frame. */
-  #layoutMeasureLabels(measures) {
+  /** What the measurement layer lays out this frame (see #layoutMarkers). */
+  #measureLabelItems = [];
+
+  /** Endpoint dots and distance labels, with the camera as drawn this frame: where they may go. */
+  #prepareMeasureLabels(measures) {
     const size = Math.clamp(Math.min(this.width, this.height) * 0.016, 6, 24);
     const all = [...measures, ...this.#liveMeasures];
     const labels = all.map(({id, points}) => ({id, text: this.#distanceLabel(points)}));
-    const sprites = this.measureLabels.sync(labels, size, this.selectedMeasure, this.resolution);
+    this.measureLabels.sync(labels, size, this.#labelSize, this.selectedMeasure, this.resolution);
     const project = this.#projector();
-    for ( const {id, points: [ua, va, ub, vb]} of all ) {
-      const sprite = sprites.get(id);
+    return all.map(({id, points: [ua, va, ub, vb]}) => {
       const from = this.#surfacePosition(ua, va);
       const to = this.#surfacePosition(ub, vb);
-      const a = project(from);
-      const b = project(to);
-      const middle = project({x: (from.x + to.x) / 2, y: (from.y + to.y) / 2, z: (from.z + to.z) / 2});
-      if ( !a || !b || !middle ) {
-        sprite.container.visible = false;
-        continue;
-      }
-      const alpha = this.#opacity * this.#flicker * this.#volumeAlpha(middle) * depthFade(middle.depth);
-      sprite.place(a, b, middle, alpha);
-    }
+      const at = t => {
+        const point = project({x: from.x + ((to.x - from.x) * t), y: from.y + ((to.y - from.y) * t), z: from.z + ((to.z - from.z) * t)});
+        if ( !point ) return null;
+        const alpha = this.#opacity * this.#flicker * this.#volumeAlpha(point) * depthFade(point.depth);
+        return {point, alpha, scale: this.#perspective(point.depth)};
+      };
+      return {id, a: project(from), b: project(to), at};
+    });
   }
 
   #distanceLabel(points) {
@@ -2389,7 +2398,7 @@ export default class HoloRenderer {
       const text = area.label || ((squareMetres === null) ? "◇" : formatArea(squareMetres, this.data.scale.unit));
       return {id: area.id, text, color: area.color};
     });
-    const sprites = this.areaLayer.sync(labels, size, this.selectedArea, this.resolution);
+    const sprites = this.areaLayer.sync(labels, size, this.#labelSize, this.selectedArea, this.resolution);
     const project = this.#projector();
     for ( const area of areas ) {
       const sprite = sprites.get(area.id);
@@ -2399,7 +2408,8 @@ export default class HoloRenderer {
         sprite.container.visible = false;
         continue;
       }
-      sprite.place(point, this.#opacity * this.#flicker * this.#volumeAlpha(point) * depthFade(point.depth));
+      sprite.place(point, this.#opacity * this.#flicker * this.#volumeAlpha(point) * depthFade(point.depth),
+        this.#perspective(point.depth));
     }
   }
 
@@ -2746,24 +2756,59 @@ export default class HoloRenderer {
     return (((x - spot.x) / spot.rx) ** 2) + (((y - spot.y) / spot.ry) ** 2) <= 1;
   }
 
+  /** The label size setting, within its range. */
+  get #labelSize() {
+    const [min, max] = MARKING_RANGES.labelSize;
+    return Math.clamp(Number(this.data.look.labelSize) || 1, min, max);
+  }
+
+  /**
+   * How much bigger than usual a pin or label at this depth is drawn: as perspective would have it (1 at the depth
+   * the camera looks at), within limits so far ones stay readable and near ones don't crowd the rest.
+   * @param {number} depth
+   */
+  #perspective(depth) {
+    const dist = this.cameraUniform[2];
+    return Math.clamp(dist / Math.max(dist + depth, 0.05), MIN_SCALE, MAX_SCALE);
+  }
+
+  /**
+   * Stand the waypoints on the surface, and lay out the labels: area labels stay put, measurement labels keep clear
+   * of them and of the pins' heads, and pin labels of all of those.
+   */
   #layoutMarkers(pitch) {
     const {look} = this.data;
     const markers = this.markers;
     const size = Math.clamp(Math.min(this.width, this.height) * 0.022, 7, 32);
-    this.markerLayer.sync(markers, {size, labels: look.labels, selected: this.selectedMarker,
+    this.markerLayer.sync(markers, {size, labelSize: this.#labelSize, labels: look.labels, selected: this.selectedMarker,
       resolution: this.resolution});
+    const [min, max] = MARKING_RANGES.pinHeight;
+    const stem = STEM_HEIGHT * Math.clamp(Number(look.pinHeight) || 0, min, max);
+    const project = this.#projector();
+    const pins = [];
     for ( const marker of markers ) {
       const surface = this.#surfacePosition(marker.u, marker.v);
-      const base = this.#project(surface);
-      const head = this.#project({...surface, y: surface.y + STEM_HEIGHT});
-      const sprite = this.markerLayer.get(marker.id);
-      if ( !base || !head ) {
-        sprite.container.visible = false;
+      const base = project(surface);
+      const height = stem * (STEM_TIERS[marker.size] ?? 1);
+      const head = project({...surface, y: surface.y + height});
+      const above = project({...surface, y: surface.y + height + 0.1});
+      if ( !base || !head || !above ) {
+        this.markerLayer.get(marker.id).container.visible = false;
         continue;
       }
+      // Which way a stem grows on screen (straight up, unless the camera looks down along it).
+      const length = Math.hypot(above.x - head.x, above.y - head.y);
+      const up = (length > 1) ? {x: (above.x - head.x) / length, y: (above.y - head.y) / length} : {x: 0, y: -1};
       const alpha = this.#opacity * this.#flicker * this.#volumeAlpha(base) * depthFade(base.depth);
-      sprite.place(base, head, Math.sin(pitch), alpha);
+      pins.push({id: marker.id, tier: marker.size, base, head, up, depth: head.depth, scale: this.#perspective(head.depth), alpha});
     }
+    const areas = this.areaLayer.boxes;
+    const heads = pins.filter(pin => pin.alpha > 0.05).map(pin => this.markerLayer.get(pin.id).headRect(pin.head, pin.scale));
+    this.measureLabels.layout(this.#measureLabelItems, [...areas, ...heads], this.selectedMeasure);
+    this.markerLayer.layout(pins, [...this.measureLabels.boxes, ...areas], {
+      width: this.width, height: this.height, squash: Math.sin(pitch), lean: look.pinLean !== false,
+      focus: [this.hoveredMarker, this.selectedMarker].filter(Boolean)
+    });
   }
 
   /**
