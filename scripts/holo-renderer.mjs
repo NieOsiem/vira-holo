@@ -11,7 +11,7 @@ const FOCAL = 2.6;
 /** Camera distance at which the projector footprint fills FILL of the tile. */
 const BASE_DIST = 4.8;
 const FILL = 0.85;
-export const MIN_DIST = 2.2;
+export const MIN_DIST = 1.1;
 export const MAX_DIST = 14;
 export const MIN_PITCH = 0.15;
 export const MAX_PITCH = Math.PI / 2;

@@ -109,12 +109,16 @@ class MarkerSprite {
       if ( fill ) this.head.endFill();
     };
     this.icon.visible = false;
+    // Another glyph: forget the picture, so one still loading doesn't clear the head when it arrives.
+    if ( marker.glyph !== IMAGE_GLYPH ) this.iconSrc = null;
     if ( marker.glyph === IMAGE_GLYPH ) {
-      // A picture on a soft disc of the ink (edged when selected), recoloured with the ink unless told not to.
-      this.head.lineStyle(0).beginFill(color, 0.16).drawCircle(0, 0, radius * 1.05).endFill();
-      this.head.lineStyle({width: Math.max(1, radius * (selected ? 0.14 : 0.06)), color, alpha: selected ? 0.95 : 0.5})
-        .drawCircle(0, 0, radius * 1.05);
-      this.#showIcon(marker.image, radius * 1.7, marker.tint ? color : 0xffffff);
+      // A picture, recoloured with the ink unless told not to. Until it has loaded (or if it can't), a disc of the ink.
+      const standIn = () => {
+        this.head.lineStyle(0).beginFill(color, 0.16).drawCircle(0, 0, radius * 1.05).endFill();
+        this.head.lineStyle({width: Math.max(1, radius * (selected ? 0.14 : 0.06)), color, alpha: selected ? 0.95 : 0.5})
+          .drawCircle(0, 0, radius * 1.05);
+      };
+      if ( !this.#showIcon(marker.image, radius * 2, marker.tint ? color : 0xffffff) ) standIn();
     }
     else if ( marker.glyph === "portal" ) {
       // A map placed here: an open ring around a bright core.
@@ -152,22 +156,27 @@ class MarkerSprite {
 
   /**
    * Show a picture as the glyph, fitted into a square of `extent` pixels. It loads in the background (once: Foundry
-   * caches it), and never shows if it fails to.
+   * caches it), and never shows if it fails to; when it has loaded, it replaces whatever stood in for it on the head.
+   * @returns {boolean}   Whether it's on show already
    */
   #showIcon(src, extent, tint) {
     this.icon.tint = tint;
     this.iconExtent = extent;
-    if ( src !== this.iconSrc ) {
-      this.iconSrc = src;
-      this.icon.texture = PIXI.Texture.EMPTY;
-      const loadTexture = foundry.canvas.loadTexture ?? globalThis.loadTexture;
-      loadTexture(src).then(texture => {
-        if ( !texture || this.destroyed || (this.iconSrc !== src) ) return;
-        this.icon.texture = texture;
-        this.#fitIcon();
-      }).catch(err => console.warn(`Vira Holo | Pin image ${src} didn't load:`, err));
+    if ( (src === this.iconSrc) && (this.icon.texture !== PIXI.Texture.EMPTY) ) {
+      this.#fitIcon();
+      return true;
     }
-    else if ( this.icon.texture !== PIXI.Texture.EMPTY ) this.#fitIcon();
+    if ( src === this.iconSrc ) return false; // Still loading
+    this.iconSrc = src;
+    this.icon.texture = PIXI.Texture.EMPTY;
+    const loadTexture = foundry.canvas.loadTexture ?? globalThis.loadTexture;
+    loadTexture(src).then(texture => {
+      if ( !texture || this.destroyed || (this.iconSrc !== src) ) return;
+      this.head.clear();
+      this.icon.texture = texture;
+      this.#fitIcon();
+    }).catch(err => console.warn(`Vira Holo | Pin image ${src} didn't load:`, err));
+    return false;
   }
 
   #fitIcon() {
