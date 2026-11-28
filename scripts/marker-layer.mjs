@@ -52,6 +52,12 @@ const HALO_PAD = 80;
 const HALO_BLUR = 36;
 /** Halo alpha, like the built-in glyphs' glow (stronger when selected). */
 const HALO_ALPHA = 0.22;
+/**
+ * An image pin's stem fades out into its picture, which it would otherwise cross: from this far from the head's centre
+ * to this far, in head radii (the picture's half extent), in this many steps.
+ */
+const STEM_FADE = [1.5, 0.45];
+const STEM_FADE_STEPS = 8;
 /** @type {Map<string, PIXI.RenderTexture>} Each pin image's halo (white; tinted per pin), made once. */
 const halos = new Map();
 
@@ -197,6 +203,8 @@ class MarkerSprite {
     else this.label.visible = false;
     this.color = color;
     this.size = size;
+    this.radius = radius;
+    this.fadeStem = marker.glyph === IMAGE_GLYPH;
   }
 
   /**
@@ -273,11 +281,9 @@ class MarkerSprite {
    */
   render(base, head, groundSquash, alpha, scale) {
     const {color, size} = this;
-    this.stem.clear()
-      .lineStyle({width: size * 0.6, color, alpha: 0.15})
-      .moveTo(base.x, base.y).lineTo(head.x, head.y)
-      .lineStyle({width: Math.max(1, size * 0.16), color, alpha: 0.9})
-      .moveTo(base.x, base.y).lineTo(head.x, head.y);
+    this.stem.clear();
+    this.#stemLine(base, head, size * 0.6, 0.15, scale);
+    this.#stemLine(base, head, Math.max(1, size * 0.16), 0.9, scale);
     const ring = size * 0.9 * scale;
     this.ground.clear()
       .lineStyle({width: Math.max(1, size * 0.14), color, alpha: 0.8})
@@ -296,6 +302,33 @@ class MarkerSprite {
     this.base = base;
     this.tip = head;
     this.reach = size * scale * 1.8;
+  }
+
+  /** One line of the stem; an image pin's fades out as it goes into the picture (see STEM_FADE). */
+  #stemLine(base, head, width, alpha, scale) {
+    const {color} = this;
+    const dx = head.x - base.x;
+    const dy = head.y - base.y;
+    const length = Math.hypot(dx, dy);
+    if ( !this.fadeStem || !length ) {
+      this.stem.lineStyle({width, color, alpha}).moveTo(base.x, base.y).lineTo(head.x, head.y);
+      return;
+    }
+    // Points by their distance from the head
+    const at = d => ({x: head.x - (dx * d / length), y: head.y - (dy * d / length)});
+    const [from, to] = STEM_FADE.map(r => r * this.radius * scale);
+    if ( from < length ) {
+      const p = at(from);
+      this.stem.lineStyle({width, color, alpha}).moveTo(base.x, base.y).lineTo(p.x, p.y);
+    }
+    for ( let i = 0; i < STEM_FADE_STEPS; i++ ) {
+      const near = from + ((to - from) * (i + 1) / STEM_FADE_STEPS);
+      if ( near >= length ) continue;
+      const p = at(Math.min(from + ((to - from) * i / STEM_FADE_STEPS), length));
+      const q = at(near);
+      const fade = 1 - ((i + 0.5) / STEM_FADE_STEPS);
+      this.stem.lineStyle({width, color, alpha: alpha * fade * fade}).moveTo(p.x, p.y).lineTo(q.x, q.y);
+    }
   }
 
   destroy() {
