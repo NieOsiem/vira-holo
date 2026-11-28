@@ -1,5 +1,5 @@
-import {allowedDisplays, getHoloData, INKS, MAX_STROKE_POINTS, MODULE_ID, STROKE_WIDTHS, canDrive, sanitizeMeasure,
-  sanitizeStroke} from "./data.mjs";
+import {allowedDisplays, getHoloData, getStateJournal, INKS, LABEL_MODES, MAX_STROKE_POINTS, MODULE_ID, STROKE_WIDTHS,
+  canDrive, sanitizeMeasure, sanitizeStroke} from "./data.mjs";
 import {applyAnnotationEdit} from "./annotations.mjs";
 import {writeHolo} from "./links.mjs";
 import {travelTarget} from "./maps.mjs";
@@ -61,14 +61,15 @@ export function broadcastPreview(doc, preview) {
 }
 
 /**
- * Save what a driver changed (the camera, including auto-spin, the terrain's display style, and the map travelled
- * to: a map UUID, or null for home). GMs write directly; owners ask the active GM.
+ * Save what a driver changed (the camera, including auto-spin, the terrain's display style, which labels show, and
+ * the map travelled to: a map UUID, or null for home). GMs write directly; owners ask the active GM.
  * @param {TileDocument} doc
  * A sign's page may also be turned by anyone when the sign allows it (`text.flipAll`).
- * @param {{camera?: object, terrain?: {display: string}, map?: string|null, powered?: boolean, page?: number}} changes
+ * @param {{camera?: object, terrain?: {display: string}, labelMode?: string, map?: string|null, powered?: boolean,
+ *          page?: number}} changes
  */
 export function saveDriverChanges(doc, changes) {
-  if ( game.user.isGM ) return writeHolo(doc, sanitize(doc, changes));
+  if ( game.user.isGM ) return writeDriverChanges(doc, sanitize(doc, changes));
   if ( !canDrive(game.user, doc) && !(getHoloData(doc).text.flipAll && ("page" in changes)) ) return;
   const gm = activeGM();
   if ( !gm ) return;
@@ -140,7 +141,7 @@ function onSave({uuid, changes}, sender) {
   if ( game.user !== game.users.activeGM ) return;
   const doc = fromUuidSync(uuid, {strict: false});
   if ( !doc ) return;
-  if ( canDrive(sender, doc) ) writeHolo(doc, sanitize(doc, changes));
+  if ( canDrive(sender, doc) ) writeDriverChanges(doc, sanitize(doc, changes));
   else if ( getHoloData(doc).text.flipAll && isPage(changes?.page) ) writeHolo(doc, {page: changes.page});
 }
 
@@ -156,11 +157,12 @@ function onAnnotations({uuid, list, edit}, sender) {
 }
 
 /**
- * Only the fields a driver may change: camera numbers, a known display style, and travel to a neighbouring map
- * (the parent, a map placed on this one, or home).
+ * Only the fields a driver may change: camera numbers, a known display style or label mode, and travel to a
+ * neighbouring map (the parent, a map placed on this one, or home).
  */
-function sanitize(doc, {camera, terrain, map, powered, page}={}) {
+function sanitize(doc, {camera, terrain, labelMode, map, powered, page}={}) {
   const changes = {};
+  if ( LABEL_MODES.includes(labelMode) ) changes.labelMode = labelMode;
   if ( typeof powered === "boolean" ) changes.powered = powered;
   if ( isPage(page) ) changes.page = page;
   if ( camera ) changes.camera = pickCamera(camera);
@@ -168,6 +170,20 @@ function sanitize(doc, {camera, terrain, map, powered, page}={}) {
   const target = (map === undefined) ? undefined : travelTarget(doc, map);
   if ( target !== undefined ) changes.camera = {...changes.camera, map: target};
   return changes;
+}
+
+/**
+ * Write a driver's sanitized changes. Which labels show is a look setting, unless the map shown has its own pin and
+ * label settings: then it's the map's.
+ */
+async function writeDriverChanges(doc, {labelMode, ...changes}) {
+  if ( labelMode ) {
+    const {map} = getHoloData(doc);
+    const journal = map.markings ? getStateJournal(map.uuid) : null;
+    if ( journal ) await journal.update({[`flags.${MODULE_ID}.state.markings.labelMode`]: labelMode});
+    else changes.look = {labelMode};
+  }
+  return writeHolo(doc, changes);
 }
 
 function pickCamera(camera={}) {

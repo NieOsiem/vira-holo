@@ -6,6 +6,8 @@ const LABEL_FONT = 0.75;
 const MIN_FONT = 8;
 /** Largest perspective scale a label is drawn at. */
 const MAX_SCALE = 1.15;
+/** zIndex of a hovered or selected area's label, above everything else drawn far to near. */
+const FOCUS_Z = 1e6;
 
 /** One area's label: its name (or size), in a box edged with its ink. Clicking it opens the area's card. */
 class AreaLabel {
@@ -15,6 +17,9 @@ class AreaLabel {
     this.text = new PIXI.Text("", LABEL_STYLE);
     this.container.addChild(this.box, this.text);
     this.key = "";
+    /** Whether the label is shown (not only while hovered or selected), and its eased alpha. */
+    this.shown = true;
+    this.labelAlpha = 1;
   }
 
   draw(text, color, size, labelSize, selected, resolution) {
@@ -47,16 +52,20 @@ class AreaLabel {
    * @param {{x: number, y: number, depth: number}} point
    * @param {number} alpha
    * @param {number} scale   Perspective: how much bigger than usual the label is drawn
+   * @param {{shown: boolean, focused: boolean, ease: number}} options   Whether the label is shown, or only while
+   *   hovered or selected (and then on top), and how far to ease its alpha this frame
    */
-  place({x, y, depth}, alpha, scale) {
+  place({x, y, depth}, alpha, scale, {shown, focused, ease}) {
     const w = this.size.w * scale;
     const h = this.size.h * scale;
+    this.shown = shown;
+    this.labelAlpha += (((shown || focused) ? 1 : 0) - this.labelAlpha) * ease;
     this.container.position.set(x - (w / 2), y - (h / 2));
     this.container.scale.set(scale);
-    this.container.zIndex = -depth;
+    this.container.zIndex = focused ? FOCUS_Z : -depth;
     this.bounds = new PIXI.Rectangle(this.container.x, this.container.y, w, h);
-    this.container.alpha = alpha;
-    this.container.visible = alpha > 0.01;
+    this.container.alpha = alpha * this.labelAlpha;
+    this.container.visible = this.container.alpha > 0.01;
   }
 
   destroy() {
@@ -143,9 +152,9 @@ export default class AreaLayer {
     return this.#sprites;
   }
 
-  /** The boxes of the labels on show: {x, y, w, h}. */
+  /** The boxes of the labels shown (not those shown only while hovered): {x, y, w, h}. */
   get boxes() {
-    return Array.from(this.#sprites.values()).filter(s => s.container.visible && s.bounds)
+    return Array.from(this.#sprites.values()).filter(s => s.shown && s.container.visible && s.bounds)
       .map(({bounds: {x, y, width, height}}) => ({x, y, w: width, h: height}));
   }
 
@@ -153,7 +162,7 @@ export default class AreaLayer {
   hitTest(x, y) {
     let best = null;
     for ( const [id, sprite] of this.#sprites ) {
-      if ( !sprite.container.visible || !sprite.bounds?.contains(x, y) ) continue;
+      if ( !sprite.container.visible || (sprite.labelAlpha < 0.5) || !sprite.bounds?.contains(x, y) ) continue;
       if ( !best || (sprite.container.zIndex > best.z) ) best = {id, z: sprite.container.zIndex};
     }
     return best?.id ?? null;

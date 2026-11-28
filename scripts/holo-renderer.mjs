@@ -39,6 +39,10 @@ const STEM_TIERS = {1: 0.6, 2: 0.8, 3: 1};
 const MIN_SCALE = 0.75;
 /** How long everything labels are laid out around must hold still before they're laid out afresh. */
 const STILL_MS = 200;
+/** Time constant of labels fading in and out with the label mode or hovering. */
+const LABEL_FADE_MS = 90;
+/** How near (render-texture pixels) the pointer must come to a measurement's line to show its hidden label. */
+const HOVER_REACH = 6;
 /** Longest side of the CPU copy of a heightmap, used to stand waypoints on the terrain and to pick points on it. */
 const HEIGHT_SAMPLES = 512;
 /** How long a new or erased stroke or measurement shows that way here while the GM saves it. */
@@ -969,6 +973,16 @@ function squaresWire(n, hx, y, hz, {across, down}) {
     .addIndex(index);
 }
 
+/** Is (x, y) inside a polygon given as [x, y, ...]? (Even-odd rule.) */
+function insidePolygon(x, y, points) {
+  let inside = false;
+  for ( let i = 0, j = points.length - 2; i < points.length; j = i, i += 2 ) {
+    const [xi, yi, xj, yj] = [points[i], points[i + 1], points[j], points[j + 1]];
+    if ( ((yi > y) !== (yj > y)) && (x < xi + (((y - yi) * (xj - xi)) / (yj - yi))) ) inside = !inside;
+  }
+  return inside;
+}
+
 /** Mirrors the shaders' depthFade: farther points dim a little. */
 function depthFade(depth, far=0.6) {
   return 1 + ((far - 1) * Math.clamp((depth + 1) * 0.5, 0, 1));
@@ -1170,8 +1184,10 @@ export default class HoloRenderer {
   #liveMarkers = new Map();
   /** Waypoint whose card is open on this client. */
   selectedMarker = null;
-  /** Waypoint under the pointer on this client: its label shows on top. */
+  /** Waypoint, measurement and area under the pointer on this client: their labels show (on top). */
   hoveredMarker = null;
+  hoveredMeasure = null;
+  hoveredArea = null;
   /** The stroke this client is drawing right now. */
   #liveStroke = null;
   #liveStrokeVersion = 0;
@@ -1672,7 +1688,7 @@ export default class HoloRenderer {
     disc.uDashPhase = (seconds * 0.5) % 1;
     this.#updateSign(seconds);
     this.#updateMotes(showTerrain, seconds);
-    this.#layoutAreaLabels();
+    this.#layoutAreaLabels(deltaMS);
     this.#layoutLines(showTerrain);
     this.#layoutMarkers(pitch);
     this.#drawPings();
@@ -2392,7 +2408,9 @@ export default class HoloRenderer {
   }
 
   /** Each area's label at its middle: its name, else its size (with a scale), else a plain mark. */
-  #layoutAreaLabels() {
+  #layoutAreaLabels(deltaMS) {
+    const shown = this.#labelsShown.measures;
+    const ease = 1 - Math.exp(-deltaMS / LABEL_FADE_MS);
     const areas = this.areas;
     const size = Math.clamp(Math.min(this.width, this.height) * 0.015, 6, 22);
     const labels = areas.map(area => {
@@ -2410,8 +2428,9 @@ export default class HoloRenderer {
         sprite.container.visible = false;
         continue;
       }
+      const focused = [this.hoveredArea, this.selectedArea].includes(area.id);
       sprite.place(point, this.#opacity * this.#flicker * this.#volumeAlpha(point) * depthFade(point.depth),
-        this.#perspective(point.depth));
+        this.#perspective(point.depth), {shown, focused, ease});
     }
   }
 
@@ -2758,6 +2777,12 @@ export default class HoloRenderer {
     return (((x - spot.x) / spot.rx) ** 2) + (((y - spot.y) / spot.ry) ** 2) <= 1;
   }
 
+  /** Which labels the label mode shows: pins', and measurements' and areas'. */
+  get #labelsShown() {
+    const mode = this.data.look.labelMode;
+    return {pins: (mode === "all") || (mode === "pins"), measures: (mode === "all") || (mode === "measures")};
+  }
+
   /** The label size setting, within its range. */
   get #labelSize() {
     const [min, max] = MARKING_RANGES.labelSize;
@@ -2782,7 +2807,7 @@ export default class HoloRenderer {
     const {look} = this.data;
     const markers = this.markers;
     const size = Math.clamp(Math.min(this.width, this.height) * 0.022, 7, 32);
-    this.markerLayer.sync(markers, {size, labelSize: this.#labelSize, labels: look.labels, selected: this.selectedMarker,
+    this.markerLayer.sync(markers, {size, labelSize: this.#labelSize, selected: this.selectedMarker,
       resolution: this.resolution});
     const [min, max] = MARKING_RANGES.pinHeight;
     const stem = STEM_HEIGHT * Math.clamp(Number(look.pinHeight) || 0, min, max);
@@ -2807,9 +2832,11 @@ export default class HoloRenderer {
     const areas = this.areaLayer.boxes;
     const heads = pins.filter(pin => pin.alpha > 0.05).map(pin => this.markerLayer.get(pin.id).headRect(pin.head, pin.scale));
     const mode = this.#layoutMode(markers, pins, areas);
-    this.measureLabels.layout(this.#measureLabelItems, [...areas, ...heads], this.selectedMeasure, mode);
+    const shown = this.#labelsShown;
+    this.measureLabels.layout(this.#measureLabelItems, [...areas, ...heads], {selected: this.selectedMeasure, mode,
+      labels: shown.measures, focus: [this.hoveredMeasure, this.selectedMeasure].filter(Boolean)});
     this.markerLayer.layout(pins, [...this.measureLabels.boxes, ...areas], {
-      width: this.width, height: this.height, squash: Math.sin(pitch), lean: look.pinLean !== false,
+      width: this.width, height: this.height, squash: Math.sin(pitch), labels: shown.pins, lean: look.pinLean !== false,
       focus: [this.hoveredMarker, this.selectedMarker].filter(Boolean), mode
     });
   }
@@ -2832,7 +2859,7 @@ export default class HoloRenderer {
     const round = value => Math.round(value * 2);
     const point = p => (p ? `${round(p.x)},${round(p.y)}` : "-");
     const key = [
-      this.#labelSize, this.data.look.labels, this.data.look.pinLean, this.selectedMarker, this.selectedMeasure,
+      this.#labelSize, this.data.look.labelMode, this.data.look.pinLean, this.selectedMarker, this.selectedMeasure,
       ...markers.map(m => `${m.id}:${m.size}:${m.label}`),
       ...pins.map(pin => `${pin.id}:${point(pin.head)}:${round(pin.scale * 10)}`),
       ...this.#measureLabelItems.map(item => `${item.id}:${point(item.a)}:${point(item.b)}`),
@@ -2877,6 +2904,24 @@ export default class HoloRenderer {
   /** The waypoint under a render-texture point, if any. */
   markerAt(point) {
     return this.markerLayer.hitTest(point.x, point.y);
+  }
+
+  /**
+   * What's under a render-texture point whose label should show while hovered: a waypoint, else a measurement (its
+   * label or, with measurement labels hidden, its line), else (with area labels hidden) an area.
+   * @returns {{marker?: string, measure?: string, area?: string}}
+   */
+  hoverAt(point) {
+    const marker = this.markerAt(point);
+    if ( marker ) return {marker};
+    const label = this.measureAt(point);
+    if ( label ) return {measure: label};
+    if ( this.#labelsShown.measures ) return {};
+    const line = this.annotationsAlong(point, point, HOVER_REACH).find(({list}) => list === "measures");
+    if ( line ) return {measure: line.id};
+    const uv = this.surfaceAt(point);
+    const area = uv && this.areas.findLast(a => insidePolygon(uv.u, uv.v, this.areaOutline(a)));
+    return area ? {area: area.id} : {};
   }
 
   /** Where a waypoint's head is drawn, in render-texture pixels. */

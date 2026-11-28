@@ -27,6 +27,7 @@
       "undo": "Undo your last change to pins, drawings or measurements",
       "redo": "Redo",
       "display": "Terrain display",
+      "labels": "Labels",
       "power": "Switch the hologram off",
       "up": "Up a level: show the map this one is on"
     },
@@ -112,7 +113,8 @@
         "glow": "Projector glow",
         "north": "North marker",
         "northHint": "A small ^ between the projector's circles, pointing to the top of the map image (taken to be north).",
-        "labels": "Show labels",
+        "labelMode": "Labels shown",
+        "labelModeHint": "Hidden labels show while you hover their pin, measurement line or area. The labels glyph on the hologram's tool ring switches this for everyone.",
         "pinHeight": "Pin height",
         "labelSize": "Label size",
         "pinLean": "Lean pins aside",
@@ -285,6 +287,12 @@
       "Delete": "Delete",
       "CustomInk": "Custom ink",
       "NoScale": "Set a scale (Content tab) to see its size"
+    },
+    "LabelMode": {
+      "all": "All labels",
+      "pins": "Pin labels only",
+      "measures": "Distances and areas only",
+      "none": "Only when hovered"
     },
     "Display": {
       "wireXray": "Wireframe, see-through",

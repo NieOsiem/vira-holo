@@ -1,6 +1,6 @@
 import {DISPLAY_MODES, OFF_STYLES, SIGN_BASES, SIGN_PAGINGS, SIGN_PANELS, SIGN_SCROLLS, SIGN_SOURCES, SIGN_TILT_RANGE,
-  allowedDisplays, LINK_SECTIONS, MARKING_KEYS, MARKING_RANGES, MODULE_ID, UNITS, defaultCamera, deletionUpdate,
-  getHoloData, getStateJournal} from "./data.mjs";
+  allowedDisplays, LABEL_MODES, LINK_SECTIONS, MARKING_KEYS, MARKING_RANGES, MODULE_ID, UNITS, defaultCamera,
+  deletionUpdate, getHoloData, getStateJournal} from "./data.mjs";
 import * as history from "./history.mjs";
 import {createLink, joinLink, leaveLink, linkChoices, writeHolo} from "./links.mjs";
 import {addMapAbove, addMapInside, arrivalCamera, parentChoices, setParent} from "./maps.mjs";
@@ -169,6 +169,8 @@ export default class HoloConfig extends HandlebarsApplicationMixin(DocumentSheet
         label: localize(`VIRAHOLO.Config.look.${key}`)
       })),
       pinLeanField: markingField(holo, "pinLean"),
+      labelModeField: markingField(holo, "labelMode"),
+      labelModes: Object.fromEntries(LABEL_MODES.map(m => [m, localize(`VIRAHOLO.LabelMode.${m}`)])),
       markerCount: holo.annotations.markers.length,
       strokeCount: holo.annotations.strokes.length,
       measureCount: holo.annotations.measures.length,

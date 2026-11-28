@@ -27,6 +27,15 @@ const DISPLAY_GLYPHS = {
   solid: `<path d="${MOUNTAIN}" fill="currentColor"/>`
 };
 GLYPHS.display = DISPLAY_GLYPHS.xray;
+/** The labels glyph shows which labels are shown (LABEL_MODES): a label, with a pin's dot, a ruler, or struck out. */
+const TAG = '<rect x="2.5" y="5.5" width="19" height="13" rx="2.5"/>';
+const LABEL_GLYPHS = {
+  all: `${TAG}<path d="M6.5 10.5h11M6.5 14h7"/>`,
+  pins: `${TAG}<circle cx="7" cy="12" r="2" fill="currentColor" stroke="none"/><path d="M11 10.5h6.5M11 14h4"/>`,
+  measures: `${TAG}<path d="M6 14.5h12M8 11.5v3M12 9.5v5M16 11.5v3"/>`,
+  none: '<rect x="2.5" y="5.5" width="19" height="13" rx="2.5" stroke-dasharray="2.5 2"/><path d="M4 20 20 4"/>'
+};
+GLYPHS.labels = LABEL_GLYPHS.all;
 
 /** Angle between neighbouring glyphs along the projection's edge, in radians. */
 const ARC_STEP = 0.13;
@@ -60,7 +69,7 @@ export function showRing(tile, actions) {
   const {mode, map} = getHoloData(tile.document);
   const terrain = mode === "terrain";
   const up = !!map.parent;
-  const names = [...(up ? ["up"] : []), "recenter", "spin", ...(terrain ? ["display"] : []), "waypoint", "ping", "draw", "erase", "measure", "area", "undo",
+  const names = [...(up ? ["up"] : []), "recenter", "spin", ...(terrain ? ["display"] : []), "labels", "waypoint", "ping", "draw", "erase", "measure", "area", "undo",
     "redo", "power", ...(game.user.isGM ? ["settings"] : [])];
   const buttons = names.map((name, index) => {
     const button = document.createElement("button");
@@ -79,7 +88,7 @@ export function showRing(tile, actions) {
     element.append(button);
     return button;
   });
-  ring = {tile, actions, terrain, up, element, buttons, strip: null, stripGlyph: null, display: null};
+  ring = {tile, actions, terrain, up, element, buttons, strip: null, stripGlyph: null, display: null, labels: null};
   refreshRing();
 }
 
@@ -192,6 +201,15 @@ export function refreshRing(tile) {
     const label = `${game.i18n.localize("VIRAHOLO.Ring.display")}: ${game.i18n.localize(`VIRAHOLO.Display.${display}`)}`;
     displayButton.dataset.tooltip = label;
     displayButton.setAttribute("aria-label", label);
+  }
+  const labelsButton = element.querySelector('[data-glyph="labels"]');
+  if ( labelsButton && (ring.labels !== look.labelMode) ) {
+    ring.labels = look.labelMode;
+    labelsButton.querySelector("svg").innerHTML = LABEL_GLYPHS[look.labelMode] ?? LABEL_GLYPHS.all;
+    const mode = game.i18n.localize(`VIRAHOLO.LabelMode.${look.labelMode}`);
+    const label = `${game.i18n.localize("VIRAHOLO.Ring.labels")}: ${mode}`;
+    labelsButton.dataset.tooltip = label;
+    labelsButton.setAttribute("aria-label", label);
   }
   const {width, height, rotation} = tile.document;
   const {x: cx, y: cy} = tile.center;

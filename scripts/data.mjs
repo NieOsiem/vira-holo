@@ -48,8 +48,8 @@ export const DEFAULTS = Object.freeze({
     north: true,
     /** Density of the specks of light rising through the hologram (0 = none). */
     motes: 0.5,
-    /** Show waypoint labels. */
-    labels: true,
+    /** Which labels are shown (LABEL_MODES); the others show while hovered. */
+    labelMode: "all",
     /** Pin stem height and label size (pins, measurements and areas), as multiples of the usual. See MARKING_RANGES. */
     pinHeight: 1,
     labelSize: 1,
@@ -213,12 +213,17 @@ export function mapChildren(uuid) {
 /** Slider ranges [min, max] of the pin and label sizes a hologram (`look`) or a map (`state.markings`) sets. */
 export const MARKING_RANGES = Object.freeze({pinHeight: [0, 3], labelSize: [0.3, 2.5]});
 /** The pin and label settings of the look a map may have its own of: the sizes, and whether pins may lean. */
-export const MARKING_KEYS = Object.freeze([...Object.keys(MARKING_RANGES), "pinLean"]);
+export const MARKING_KEYS = Object.freeze([...Object.keys(MARKING_RANGES), "pinLean", "labelMode"]);
+/**
+ * Which labels a hologram shows: all, pins' only, measurements' and areas' only, or none. Hidden ones show while
+ * hovered (or selected).
+ */
+export const LABEL_MODES = Object.freeze(["all", "pins", "measures", "none"]);
 
 /**
  * A map's own pin and label settings, which override the hologram's look wherever the map is shown.
  * @param {object} state   The map journal's state
- * @returns {{pinHeight: number, labelSize: number, pinLean: boolean}|null}   Null if the map has none
+ * @returns {{pinHeight: number, labelSize: number, pinLean: boolean, labelMode: string}|null}   Null if it has none
  */
 function mapMarkings(state) {
   if ( !state.markings ) return null;
@@ -229,6 +234,8 @@ function mapMarkings(state) {
   }
   const lean = state.markings.pinLean;
   markings.pinLean = (typeof lean === "boolean") ? lean : DEFAULTS.look.pinLean;
+  const mode = state.markings.labelMode;
+  markings.labelMode = LABEL_MODES.includes(mode) ? mode : DEFAULTS.look.labelMode;
   return markings;
 }
 
@@ -291,6 +298,11 @@ export function getHoloData(doc) {
   if ( source.look && ("projector" in source.look) ) {
     for ( const part of ["ring", "dashes", "glow"] ) source.look[part] ??= source.look.projector;
     delete source.look.projector;
+  }
+  // Before label modes, one switch showed or hid pins' labels.
+  if ( source.look && ("labels" in source.look) ) {
+    source.look.labelMode ??= (source.look.labels === false) ? "measures" : "all";
+    delete source.look.labels;
   }
   const data = foundry.utils.deepClone(DEFAULTS);
   foundry.utils.mergeObject(data, MODE_DEFAULTS[source.mode ?? data.mode] ?? {});

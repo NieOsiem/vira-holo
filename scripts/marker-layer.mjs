@@ -79,8 +79,8 @@ class MarkerSprite {
   }
 
   /** Redraw the parts that only change with the waypoint's settings or the hologram's size. */
-  draw(marker, unit, labelSize, showLabel, selected, resolution) {
-    const key = [marker.label, marker.glyph, marker.color, marker.size, unit, labelSize, showLabel, selected, resolution].join("|");
+  draw(marker, unit, labelSize, selected, resolution) {
+    const key = [marker.label, marker.glyph, marker.color, marker.size, unit, labelSize, selected, resolution].join("|");
     if ( key === this.key ) return;
     this.key = key;
     const size = unit * (MARKER_SIZES[marker.size] ?? 1);
@@ -109,7 +109,7 @@ class MarkerSprite {
       outline(Math.max(1, radius * 0.22), 1, selected ? 0.75 : 0.45);
     }
 
-    this.hasLabel = showLabel && !!marker.label;
+    this.hasLabel = !!marker.label;
     if ( this.hasLabel ) {
       const font = Math.max(MIN_FONT, Math.round(unit * (LABEL_TIERS[marker.size] ?? 1) * LABEL_FONT * labelSize));
       this.text.style.fontSize = font;
@@ -221,9 +221,9 @@ export default class MarkerLayer {
   /**
    * Create, update and remove sprites to match the waypoints.
    * @param {object[]} markers
-   * @param {{size: number, labelSize: number, labels: boolean, selected: string|null, resolution: number}} options
+   * @param {{size: number, labelSize: number, selected: string|null, resolution: number}} options
    */
-  sync(markers, {size, labelSize, labels, selected, resolution=1}) {
+  sync(markers, {size, labelSize, selected, resolution=1}) {
     const ids = new Set(markers.map(m => m.id));
     for ( const [id, sprite] of this.#sprites ) {
       if ( ids.has(id) ) continue;
@@ -237,7 +237,7 @@ export default class MarkerLayer {
         this.#sprites.set(marker.id, sprite);
         this.parent.addChild(sprite.container);
       }
-      sprite.draw(marker, size, labelSize, labels, marker.id === selected, resolution);
+      sprite.draw(marker, size, labelSize, marker.id === selected, resolution);
     }
   }
 
@@ -251,11 +251,17 @@ export default class MarkerLayer {
    * @param {object[]} pins   {id, tier, base, head, up (unit vector: which way is up on screen at the head), depth,
    *                          scale, alpha}, for each pin in front of the camera
    * @param {{x: number, y: number, w: number, h: number}[]} obstacles   Labels that stay put
-   * @param {{width: number, height: number, squash: number, lean: boolean, focus: string[], mode: string}} options
-   *   The render texture's size, how flat ground rings look, whether pins may lean, the hovered or selected pins, and
-   *   how to lay out (see HoloRenderer#layoutMode): afresh ("fresh"), not at all ("hold"), or keeping places ("follow")
+   * @param {object} options
+   * @param {number} options.width       The render texture's size
+   * @param {number} options.height
+   * @param {number} options.squash      How flat ground rings look
+   * @param {boolean} options.labels     Whether pins' labels are shown (else only while hovered or selected)
+   * @param {boolean} options.lean       Whether pins may lean
+   * @param {string[]} options.focus     The hovered or selected pins
+   * @param {string} options.mode        How to lay out (see HoloRenderer#layoutMode): afresh ("fresh"), not at all
+   *                                     ("hold"), or keeping places ("follow")
    */
-  layout(pins, obstacles, {width, height, squash, lean, focus, mode}) {
+  layout(pins, obstacles, {width, height, squash, labels, lean, focus, mode}) {
     const fresh = mode === "fresh";
     const now = performance.now();
     const dt = Math.clamp(now - (this.#last ?? now), 0, 100);
@@ -272,7 +278,7 @@ export default class MarkerLayer {
     const taken = [...obstacles];
     // Bigger pins first; while the view moves, a label already shown keeps its place ahead of one waiting to show;
     // then nearer first.
-    const order = live.filter(pin => pin.sprite.hasLabel).sort((a, b) => (b.tier - a.tier)
+    const order = live.filter(pin => labels && pin.sprite.hasLabel).sort((a, b) => (b.tier - a.tier)
       || (fresh ? 0 : Number(b.sprite.shown) - Number(a.sprite.shown)) || (a.depth - b.depth));
     const placing = new Set(order);
     for ( const pin of pins ) {

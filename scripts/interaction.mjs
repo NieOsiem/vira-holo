@@ -1,5 +1,5 @@
-import {DEFAULTS, MODULE_ID, allowedDisplays, effectiveDisplay, INKS, MARKER_GLYPHS, MAX_AREAS, MAX_AREA_POINTS, MAX_MEASURES,
-  MAX_STROKES, MAX_STROKE_POINTS, canDrive, contrastingInk, defaultCamera, sanitizeScale} from "./data.mjs";
+import {DEFAULTS, MODULE_ID, allowedDisplays, effectiveDisplay, INKS, LABEL_MODES, MARKER_GLYPHS, MAX_AREAS, MAX_AREA_POINTS,
+  MAX_MEASURES, MAX_STROKES, MAX_STROKE_POINTS, canDrive, contrastingInk, defaultCamera, sanitizeScale} from "./data.mjs";
 import {closeAreaCard, isAreaCardEvent, openAreaCard, updateAreaCard} from "./area-card.mjs";
 import * as history from "./history.mjs";
 import HoloConfig from "./holo-config.mjs";
@@ -117,6 +117,7 @@ function setEngaged(hit) {
     recenter: () => recenter(tile, holo),
     spin: () => toggleSpin(tile, holo),
     display: () => cycleDisplay(tile, holo),
+    labels: () => cycleLabels(tile, holo),
     waypoint: () => toggleTool("waypoint", holo),
     ping: () => toggleTool("ping", holo),
     draw: () => toggleTool("draw", holo),
@@ -420,7 +421,7 @@ function onPointerDown(event) {
 
 function onPointerMove(event) {
   if ( !drag ) {
-    hoverMarker(event);
+    hoverLabels(event);
     hoverArea(event);
     return hoverMeasure(event);
   }
@@ -690,11 +691,16 @@ function showMeasure(tile, holo, {a, b}, force=false) {
   sendPreview(tile, {kind: "measure", points}, force);
 }
 
-/** The pin under the pointer shows its label on top, for anyone (driver or not). */
-function hoverMarker(event) {
+/** The pin, measurement or area under the pointer shows its label (on top), for anyone (driver or not). */
+function hoverLabels(event) {
   const hit = hologramAt(event, true);
-  const id = hit ? hit.holo.markerAt(hit.holo.toTexturePoint(canvasPoint(event))) : null;
-  for ( const holo of getHolograms().values() ) holo.hoveredMarker = (holo === hit?.holo) ? id : null;
+  const found = hit ? hit.holo.hoverAt(hit.holo.toTexturePoint(canvasPoint(event))) : {};
+  for ( const holo of getHolograms().values() ) {
+    const here = (holo === hit?.holo) ? found : {};
+    holo.hoveredMarker = here.marker ?? null;
+    holo.hoveredMeasure = here.measure ?? null;
+    holo.hoveredArea = here.area ?? null;
+  }
 }
 
 /** Move the measurement's end to the surface under a canvas point (it stays put off the surface). */
@@ -925,6 +931,12 @@ function cycleDisplay(tile, holo) {
   const allowed = allowedDisplays(terrain);
   const current = allowed.indexOf(effectiveDisplay(terrain));
   saveDriverChanges(tile.document, {terrain: {display: allowed[(current + 1) % allowed.length]}});
+}
+
+/** Show the next set of labels (LABEL_MODES), for everyone watching. */
+function cycleLabels(tile, holo) {
+  const current = LABEL_MODES.indexOf(holo.data.look.labelMode);
+  saveDriverChanges(tile.document, {labelMode: LABEL_MODES[(current + 1) % LABEL_MODES.length]});
 }
 
 /** Stop or restart auto-spin, keeping the hologram where it currently is on screen. */

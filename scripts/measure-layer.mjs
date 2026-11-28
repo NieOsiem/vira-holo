@@ -23,6 +23,8 @@ const EASE_MS = 90;
 const SETTLE_MS = 400;
 /** Gap kept between labels, in render-texture pixels. */
 const MARGIN = 2;
+/** zIndex of a hovered or selected measurement, above everything else drawn far to near. */
+const FOCUS_Z = 1e6;
 
 /** One measurement's endpoint dots and distance label; its line is drawn by a StrokeLayer. */
 class MeasureSprite {
@@ -41,6 +43,8 @@ class MeasureSprite {
     this.firstFree = null;
     this.t = 0.5;
     this.side = SPOTS[0][1];
+    /** The label's eased alpha: hidden labels fade in while their measurement is hovered or selected. */
+    this.labelAlpha = 1;
   }
 
   /** Redraw the label when its text, size or highlight changes. */
@@ -73,15 +77,18 @@ class MeasureSprite {
    * @param {{x: number, y: number, depth: number}} middle  Where the label is centred
    * @param {number} alpha
    * @param {number} scale   Perspective: how much bigger than usual the label is drawn
+   * @param {boolean} focused   Hovered or selected: drawn on top
    */
-  place(a, b, middle, alpha, scale) {
+  place(a, b, middle, alpha, scale, focused) {
     const radius = Math.max(1.5, this.size * 0.28);
     this.dots.clear().beginFill(INK, 0.95).drawCircle(a.x, a.y, radius).drawCircle(b.x, b.y, radius).endFill();
     const {x, y, w, h} = this.labelRect(middle, this.side, scale);
     this.label.position.set(x, y);
     this.label.scale.set(scale);
     this.bounds = new PIXI.Rectangle(x, y, w, h);
-    this.container.zIndex = -middle.depth;
+    this.label.alpha = this.labelAlpha;
+    this.label.visible = this.labelAlpha > 0.01;
+    this.container.zIndex = focused ? FOCUS_Z : -middle.depth;
     this.ends = [a, b];
     this.container.alpha = alpha;
     this.container.visible = alpha > 0.01;
@@ -154,11 +161,14 @@ export default class MeasureLayer {
    *                           alpha} for the point a fraction t along the line (null behind the camera)
    * @param {{x: number, y: number, w: number, h: number}[]} obstacles   Boxes to keep clear of (labels that stay
    *                           put, pin heads)
-   * @param {string|null} selected
-   * @param {"fresh"|"hold"|"follow"} mode   Lay out afresh: the first clear spot, at once; not at all; or keeping
-   *                           spots (see HoloRenderer#layoutMode)
+   * @param {object} options
+   * @param {string|null} options.selected
+   * @param {"fresh"|"hold"|"follow"} options.mode   Lay out afresh: the first clear spot, at once; not at all; or
+   *                           keeping spots (see HoloRenderer#layoutMode)
+   * @param {boolean} options.labels   Whether the labels are shown (else only while hovered or selected)
+   * @param {string[]} options.focus   The hovered or selected measurements
    */
-  layout(items, obstacles, selected, mode) {
+  layout(items, obstacles, {selected, mode, labels, focus}) {
     const fresh = mode === "fresh";
     const now = performance.now();
     const ease = 1 - Math.exp(-Math.clamp(now - (this.#last ?? now), 0, 100) / EASE_MS);
@@ -177,9 +187,12 @@ export default class MeasureLayer {
         const spot = at(t);
         return spot && sprite.labelRect(spot.point, SPOTS[i][1], spot.scale);
       });
-      if ( mode !== "hold" ) this.#choose(sprite, boxes, taken, fresh, now);
-      sprite.target = boxes[sprite.spot];
+      if ( labels && (mode !== "hold") ) this.#choose(sprite, boxes, taken, fresh, now);
+      // A label shown only while hovered takes no room from the others.
+      sprite.target = labels ? boxes[sprite.spot] : null;
       if ( sprite.target ) taken.push(sprite.target);
+      const focused = focus.includes(id);
+      sprite.labelAlpha += (((labels || focused) ? 1 : 0) - sprite.labelAlpha) * ease;
       sprite.t += (ts[sprite.spot] - sprite.t) * ease;
       sprite.side += (SPOTS[sprite.spot][1] - sprite.side) * ease;
       const shown = at(sprite.t);
@@ -187,7 +200,7 @@ export default class MeasureLayer {
         sprite.container.visible = false;
         continue;
       }
-      sprite.place(a, b, shown.point, shown.alpha, shown.scale);
+      sprite.place(a, b, shown.point, shown.alpha, shown.scale, focused);
     }
   }
 
@@ -228,7 +241,7 @@ export default class MeasureLayer {
   hitTest(x, y) {
     let best = null;
     for ( const [id, sprite] of this.#sprites ) {
-      if ( !sprite.container.visible || !sprite.bounds?.contains(x, y) ) continue;
+      if ( !sprite.container.visible || (sprite.labelAlpha < 0.5) || !sprite.bounds?.contains(x, y) ) continue;
       if ( !best || (sprite.container.zIndex > best.z) ) best = {id, z: sprite.container.zIndex};
     }
     return best?.id ?? null;

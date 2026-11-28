@@ -2,10 +2,13 @@
   <fieldset>
     <legend>{{localize "VIRAHOLO.Config.Annotations"}}</legend>
     <div class="form-group">
-      <label for="{{partId}}-labels">{{localize "VIRAHOLO.Config.look.labels"}}</label>
+      <label for="{{partId}}-label-mode">{{localize "VIRAHOLO.Config.look.labelMode"}}</label>
       <div class="form-fields">
-        <input type="checkbox" id="{{partId}}-labels" name="{{flags}}.look.labels" {{checked holo.look.labels}}>
+        <select id="{{partId}}-label-mode" name="{{labelModeField}}">
+          {{selectOptions labelModes selected=holo.look.labelMode}}
+        </select>
       </div>
+      <p class="hint">{{localize "VIRAHOLO.Config.look.labelModeHint"}}</p>
     </div>
     {{#each markingSliders}}
     <div class="form-group">
